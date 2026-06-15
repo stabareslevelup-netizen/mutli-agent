@@ -39,9 +39,11 @@ class BaseAgent:
         return model_for(self.name)
 
     async def _complete_json(self, *, system: str, user: str, job_id: str,
-                             tools: Optional[list] = None, max_tokens: int = 2048) -> Any:
+                             tools: Optional[list] = None, max_tokens: int = 2048,
+                             output_schema: Optional[dict] = None) -> Any:
         text, usage = await self.ctx.llm.complete(
-            model=self.model, system=system, user=user, tools=tools, max_tokens=max_tokens)
+            model=self.model, system=system, user=user, tools=tools,
+            max_tokens=max_tokens, output_schema=output_schema)
         await self.ctx.cost_guard.record(
             job_id=job_id, brand_id=self.ctx.brand_id, agent=self.name,
             input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,

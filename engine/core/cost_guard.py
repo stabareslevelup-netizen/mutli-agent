@@ -130,3 +130,16 @@ class CostGuard:
                 input_tokens=input_tokens, output_tokens=output_tokens, usd=usd,
             )
         return CostEntry(agent, model, input_tokens, output_tokens, usd)
+
+    async def record_external(self, *, job_id: Optional[str], brand_id: str, agent: str,
+                              usd: float, label: str) -> CostEntry:
+        """Log a non-token external cost (Higgsfield render, per-post X fee).
+        `label` stands in for the model column (e.g. 'higgsfield', 'x-api')."""
+        self._roll()
+        self._spent += usd
+        if self.cost_sink is not None:
+            await self.cost_sink.record(
+                job_id=job_id, brand_id=brand_id, agent=agent, model=label,
+                input_tokens=0, output_tokens=0, usd=round(usd, 6),
+            )
+        return CostEntry(agent, label, 0, 0, round(usd, 6))

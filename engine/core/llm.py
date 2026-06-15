@@ -35,14 +35,18 @@ class LLMClient:
 
     async def complete(self, *, model: str, system: str, user: str,
                        tools: Optional[list] = None, max_tokens: int = 2048,
-                       effort: str = "low", max_continuations: int = 3) -> tuple[str, Usage]:
+                       effort: str = "low", output_schema: Optional[dict] = None,
+                       max_continuations: int = 3) -> tuple[str, Usage]:
         messages: list[dict] = [{"role": "user", "content": user}]
         usage = Usage()
         text = ""
         for _ in range(max_continuations + 1):
+            output_config: dict[str, Any] = {"effort": effort}
+            if output_schema is not None:   # structured outputs: guarantee the shape
+                output_config["format"] = {"type": "json_schema", "schema": output_schema}
             kwargs: dict[str, Any] = dict(
                 model=model, max_tokens=max_tokens, system=system,
-                messages=messages, output_config={"effort": effort})
+                messages=messages, output_config=output_config)
             if tools:
                 kwargs["tools"] = tools
             resp = await self._client.messages.create(**kwargs)
