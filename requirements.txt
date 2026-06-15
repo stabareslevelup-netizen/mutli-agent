@@ -8,4 +8,4 @@ pgvector>=0.3
 PyYAML>=6.0
 python-dotenv>=1.0
 httpx>=0.27
-# claude-agent-sdk        # Phase 4 (Timing/Research agents + web_search tool)
+anthropic>=0.69          # Tier-1 agents: Claude + server-side web_search tool
