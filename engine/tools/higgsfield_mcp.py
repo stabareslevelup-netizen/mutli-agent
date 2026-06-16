@@ -35,7 +35,9 @@ class MockProductionBackend:
     configurable render cost. Used when Higgsfield isn't reachable."""
     name = "mock"
 
-    def __init__(self, cost_usd: float = 0.30, status: str = "ready"):
+    # Default reflects the measured real cost: seedance_2_0 15s/720p = 67.5
+    # credits ~= $3.21 at the 4,000-credit pack rate ($0.0475/credit).
+    def __init__(self, cost_usd: float = 3.21, status: str = "ready"):
         self.cost_usd = cost_usd
         self.status = status
         self.calls = 0

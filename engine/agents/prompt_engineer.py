@@ -18,7 +18,15 @@ from engine.core.models import PromptEngineerOutput, StrategyPacket
 
 _SYSTEM = ("You are a cinematic prompt engineer for an image/video model. "
            "Write ONE vivid prompt. You MUST include the exact token {placeholder} "
-           "verbatim where the character should appear. Return ONLY JSON, no fences.")
+           "verbatim where the character should appear. Return ONLY JSON, no fences.\n\n"
+           "IP SAFETY (avoid content-filter blocks): do NOT reference real-world "
+           "companies, brands, products, named robots or vehicles, logos, trademarks, "
+           "or recognizable real people. Place the character in original, generic, or "
+           "abstract environments described only through the character's own visual "
+           "system (the style/palette/encoding cues given below). Never depict on-screen "
+           "text, logos, or signage. Prefer invented or abstract settings over real, "
+           "identifiable locations. Keep the character vivid and specific — abstract the "
+           "ENVIRONMENT, never the character.")
 
 _USER = """Angle to depict: {angle}
 
