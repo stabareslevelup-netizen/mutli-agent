@@ -55,11 +55,12 @@ class Orchestrator:
     name = "orchestrator"
 
     def __init__(self, *, agents: OrchestratorAgents, job_store: JobStore,
-                 cost_guard: CostGuard, brand: BrandConfig):
+                 cost_guard: CostGuard, brand: BrandConfig, dead_letter_sink=None):
         self._a = agents
         self._jobs = job_store
         self._cost = cost_guard
         self._brand = brand
+        self._dl = dead_letter_sink
 
     async def run(self, *, topic: str, entity: Optional[str] = None,
                   trigger: str = "manual", critical: bool = False) -> JobResult:
@@ -142,3 +143,9 @@ class Orchestrator:
         except StrategyBlocked as exc:
             await self._jobs.update(jid, status="halted_narrative_conflict")
             return result("halted_narrative_conflict", reason=str(exc))
+        except Exception as exc:  # defensive: a tool/agent crash must not escape the job
+            await self._jobs.update(jid, status="failed")
+            if self._dl is not None:
+                await self._dl.record(job_id=jid, step="orchestrator",
+                                      error=f"{type(exc).__name__}: {exc}", context={})
+            return result("failed", reason=f"unexpected error: {type(exc).__name__}: {exc}")

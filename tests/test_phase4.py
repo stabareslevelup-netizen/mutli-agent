@@ -156,6 +156,15 @@ def test_citation_rule3():
     check("present requires verified citation context", s3.presence == CitationPresence.present)
     check("present sets verified flag", s3.disambiguation.matched_context_verified is True)
 
+    # REGRESSION (live bug): collision terms returned but NOT verbatim in the
+    # answer, brand not cited -> must be ambiguous, must NOT crash the validator.
+    s4 = assess_citation(query="humanoid robots", brand_aliases=["madre de maquinas"],
+                         answer_text="The Robot Report and NVIDIA are the cited authorities.",
+                         cited_sources=["The Robot Report", "NVIDIA"],
+                         collision_terms=["Elesh Norn"])
+    check("known collision (not in answer text) -> ambiguous, no crash",
+          s4.presence == CitationPresence.ambiguous)
+
 
 # --- fusion weighting + ordering --------------------------------------------
 def test_fusion():

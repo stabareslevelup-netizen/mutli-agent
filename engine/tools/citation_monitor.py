@@ -28,8 +28,11 @@ def assess_citation(*, query: str, brand_aliases: list[str], answer_text: str,
     collisions = collision_terms or []
 
     alias_in_cited = any(a in s.lower() for s in cited for a in aliases)
-    collision_present = any(c.lower() in answer_text.lower() for c in collisions)
-    collision_unresolved = collision_present and not alias_in_cited
+    # A *known* same-name collision (the monitor returned collision terms) means
+    # we cannot claim absence/presence unless the brand is actually cited. This
+    # matches the CitationSignal RULE-3 invariant regardless of whether the term
+    # string happens to appear verbatim in the answer text.
+    collision_unresolved = bool(collisions) and not alias_in_cited
 
     rank = None
     for i, s in enumerate(cited, 1):
