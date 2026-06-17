@@ -27,26 +27,30 @@ class RenderResult:
 class ProductionBackend(Protocol):
     name: str
     async def render(self, *, prompt: str, character_element_id: str,
-                     job_id: str) -> RenderResult: ...
+                     job_id: str, kind: str = "video") -> RenderResult: ...
 
 
 class MockProductionBackend:
     """Deterministic stand-in. Returns a ready asset, one shot, with a
-    configurable render cost. Used when Higgsfield isn't reachable."""
+    format-specific render cost. Used when Higgsfield isn't reachable.
+
+    Costs reflect measured/estimated reality: video (seedance_2_0 15s/720p) =
+    67.5 credits ~= $3.21; image generation is cheaper (~$0.40 estimate)."""
     name = "mock"
 
-    # Default reflects the measured real cost: seedance_2_0 15s/720p = 67.5
-    # credits ~= $3.21 at the 4,000-credit pack rate ($0.0475/credit).
-    def __init__(self, cost_usd: float = 3.21, status: str = "ready"):
-        self.cost_usd = cost_usd
+    def __init__(self, video_cost: float = 3.21, image_cost: float = 0.40, status: str = "ready"):
+        self.video_cost = video_cost
+        self.image_cost = image_cost
         self.status = status
         self.calls = 0
 
-    async def render(self, *, prompt, character_element_id, job_id) -> RenderResult:
+    async def render(self, *, prompt, character_element_id, job_id, kind="video") -> RenderResult:
         self.calls += 1   # tests assert this is exactly 1 (never looped)
+        cost = self.image_cost if kind == "image" else self.video_cost
+        ext = "png" if kind == "image" else "mp4"
         return RenderResult(
-            asset_id=f"mock-{job_id}", status=self.status, cost_usd=self.cost_usd,
-            asset_url=f"https://assets.local/mock/{job_id}.mp4" if self.status == "ready" else None)
+            asset_id=f"mock-{job_id}", status=self.status, cost_usd=cost,
+            asset_url=f"https://assets.local/mock/{job_id}.{ext}" if self.status == "ready" else None)
 
 
 # fire: (prompt, element_id) -> job dict {"id": ...};  poll: (job_id) -> status dict
@@ -70,8 +74,9 @@ class HiggsfieldMCPBackend:
         self._dl = dead_letter_sink
         self._breaker = breaker or CircuitBreaker(name="higgsfield")
 
-    async def render(self, *, prompt, character_element_id, job_id) -> RenderResult:
-        # fire ONCE — no retry on fire to avoid duplicate (paid) renders
+    async def render(self, *, prompt, character_element_id, job_id, kind="video") -> RenderResult:
+        # fire ONCE — no retry on fire to avoid duplicate (paid) renders.
+        # `kind` selects the MCP generation (video vs image) in the fire bridge.
         job = await self._fire(prompt, character_element_id)
         hf_id = job.get("id")
         # poll a bounded number of times; each poll is retry/breaker-guarded

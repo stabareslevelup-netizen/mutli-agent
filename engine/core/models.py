@@ -216,9 +216,16 @@ class MemoryQueryResult(BaseModel):
 # ===========================================================================
 # Tier 2 — Strategy (fusion output)
 # ===========================================================================
+class ContentFormat(str, Enum):
+    video = "video"          # cinematic character render (default for deep angles)
+    image = "image"          # static render — faster/cheaper, speed-sensitive angles
+    text_only = "text_only"  # copy stands alone, no visual
+
+
 class StrategyPacket(BaseModel):
     chosen_angle: str
     rationale: str = ""
+    content_format: ContentFormat = ContentFormat.video
     formats: list[str] = Field(default_factory=list)
     fusion_weights: dict[str, float] = Field(default_factory=dict)
     hard_constraints: list[NarrativeConstraint] = Field(default_factory=list)
@@ -300,6 +307,52 @@ class DistributionPlan(BaseModel):
         return self
 
 
+# ===========================================================================
+# Review UI (Phase 8) — the screenshot-able "my 10 agents built this" record
+# ===========================================================================
+class AgentAttribution(BaseModel):
+    """The agent story behind a piece — designed to be displayed/screenshotted."""
+    research_chosen: str = ""
+    research_alternatives: list[str] = Field(default_factory=list)
+    timing_velocity: str = ""
+    timing_velocity_confidence: float = 0.0
+    timing_gaps: list[str] = Field(default_factory=list)
+    timing_citation: str = ""
+    memory_context: list[str] = Field(default_factory=list)
+    copy_output_seconds: float = 0.0
+    quality: dict[str, float] = Field(default_factory=dict)   # 5 dims + overall
+
+
+class ReviewItem(BaseModel):
+    job_id: str
+    brand_id: str
+    status: str
+    content_format: ContentFormat
+    created_at: datetime = Field(default_factory=_utcnow)
+    chosen_angle: str = ""
+    x_thread: list[str] = Field(default_factory=list)
+    ig_caption: str = ""
+    youtube_script: str = ""
+    asset_url: Optional[str] = None
+    quality_overall: float = 0.0
+    quality_route: str = ""
+    auto_eligible: bool = False
+    platforms: list[str] = Field(default_factory=list)
+    attribution: AgentAttribution = Field(default_factory=AgentAttribution)
+
+
+class ProposalView(BaseModel):
+    """A pending procedural prompt-change surfaced for human approval."""
+    proposal_id: int
+    agent_name: str
+    current_version: int
+    proposed_prompt: str
+    performance_data: dict = Field(default_factory=dict)
+    voice_similarity: Optional[float] = None
+    voice_threshold: float = 0.6
+    status: str = "pending"
+
+
 __all__ = [
     "SCHEMA_VERSION", "Source", "HandoffMeta",
     "ResearchAngle", "ResearchOutput",
@@ -308,7 +361,8 @@ __all__ = [
     "CitationPresence", "DisambiguationGuard", "CitationSignal",
     "PrimarySourceSignal", "TimingSignal",
     "MemoryItem", "NarrativeConstraint", "MemoryQueryResult",
-    "StrategyPacket", "CopyOutput", "PromptEngineerOutput",
+    "ContentFormat", "StrategyPacket", "CopyOutput", "PromptEngineerOutput",
     "ProductionResult", "QualityRoute", "QualityScore",
     "PostingMode", "DistributionPlan",
+    "AgentAttribution", "ReviewItem", "ProposalView",
 ]

@@ -110,7 +110,9 @@ def test_post_jobs_route():
     fake = FakeOrchestrator()
 
     def fake_build(brand, **kw):
-        return SimpleNamespace(orchestrator=fake)
+        # main's lifespan also builds a ReviewService from these fields
+        return SimpleNamespace(orchestrator=fake, review_store=None, distribution=None,
+                               procedural=None, dead_letter=None)
 
     with patch("engine.core.assembly.build_orchestrator", fake_build):
         with TestClient(main.app) as c:

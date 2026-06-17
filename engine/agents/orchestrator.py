@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Any, Optional
 
 from engine.agents.strategy import StrategyBlocked
@@ -25,7 +26,9 @@ from engine.core.brand_loader import BrandConfig
 from engine.core.cost_guard import CostGuard
 from engine.core.fusion import fuse
 from engine.core.job_manager import JobStore
-from engine.core.models import PostingMode, QualityRoute
+from engine.core.models import (
+    AgentAttribution, ContentFormat, PostingMode, QualityRoute, ReviewItem,
+)
 from engine.core.validation_gate import HandoffHalted
 
 
@@ -55,12 +58,14 @@ class Orchestrator:
     name = "orchestrator"
 
     def __init__(self, *, agents: OrchestratorAgents, job_store: JobStore,
-                 cost_guard: CostGuard, brand: BrandConfig, dead_letter_sink=None):
+                 cost_guard: CostGuard, brand: BrandConfig, dead_letter_sink=None,
+                 review_store=None):
         self._a = agents
         self._jobs = job_store
         self._cost = cost_guard
         self._brand = brand
         self._dl = dead_letter_sink
+        self._reviews = review_store
 
     async def run(self, *, topic: str, entity: Optional[str] = None,
                   trigger: str = "manual", critical: bool = False) -> JobResult:
@@ -92,26 +97,39 @@ class Orchestrator:
                                    entity=entity),
             )
 
-            # --- Tier 2: fusion + Strategy (hard narrative constraint) ------
+            # --- Tier 2: fusion + Strategy (hard constraint + format routing) --
             await self._jobs.update(jid, current_tier=2)
             fused = fuse(research=research, memory=memory, timing=timing,
                          weights=brand.fusion_weights)
             packet = await self._a.strategy.decide(
-                fused=fused, constraints=memory.narrative, brand=brand, job_id=jid)
+                fused=fused, constraints=memory.narrative, brand=brand, job_id=jid,
+                velocity=timing.velocity.verdict)
+            fmt = packet.content_format
 
-            # --- Tier 3: parallel production inputs --------------------------
+            # --- Tier 3: Copy (timed) + Prompt Engineer (skipped for text_only) -
             await self._jobs.update(jid, current_tier=3)
-            copy, prompt = await asyncio.gather(
-                self._a.copy.run(packet=packet, brand=brand, job_id=jid),
-                self._a.prompt_engineer.run(packet=packet, brand=brand, job_id=jid),
-            )
 
-            # --- Tier 4: Production then Quality gate -------------------------
+            async def _timed_copy():
+                t0 = perf_counter()
+                c = await self._a.copy.run(packet=packet, brand=brand, job_id=jid)
+                return c, round(perf_counter() - t0, 2)
+
+            if fmt == ContentFormat.text_only:
+                copy, copy_secs = await _timed_copy()
+                prompt = None
+            else:
+                (copy, copy_secs), prompt = await asyncio.gather(
+                    _timed_copy(),
+                    self._a.prompt_engineer.run(packet=packet, brand=brand, job_id=jid),
+                )
+
+            # --- Tier 4: Production (format-routed) then Quality gate ---------
             await self._jobs.update(jid, current_tier=4)
             asset = await self._a.production.run(
                 prompt=prompt, character_element_id=brand.character.higgsfield_element_id,
-                job_id=jid)
-            has_video = asset.status == "ready"
+                job_id=jid, content_format=fmt)
+            # only VIDEO is always forced to human review; image/text follow the >=0.85 rule
+            has_video = (fmt == ContentFormat.video and asset.status == "ready")
             quality, auto_eligible = await self._a.quality.evaluate(
                 content=copy, brand=brand, job_id=jid, has_video=has_video)
 
@@ -135,7 +153,15 @@ class Orchestrator:
                 content=content, posting_mode=brand.posting_mode, job_id=jid)
 
             await self._jobs.update(jid, status="staged_for_review")
-            return result("staged_for_review", **base, bundle=bundle)
+
+            # build the screenshot-able review item (content + agent attribution)
+            item = self._build_review_item(jid, fmt, fused, research, memory, timing,
+                                           packet, copy, asset, quality, auto_eligible,
+                                           bundle, copy_secs)
+            if self._reviews is not None:
+                await self._reviews.add(item=item, bundle=bundle)
+
+            return result("staged_for_review", **base, bundle=bundle, review_item=item)
 
         except HandoffHalted as exc:
             await self._jobs.update(jid, status="failed")
@@ -149,3 +175,30 @@ class Orchestrator:
                 await self._dl.record(job_id=jid, step="orchestrator",
                                       error=f"{type(exc).__name__}: {exc}", context={})
             return result("failed", reason=f"unexpected error: {type(exc).__name__}: {exc}")
+
+    def _build_review_item(self, jid, fmt, fused, research, memory, timing, packet,
+                           copy, asset, quality, auto_eligible, bundle, copy_secs) -> ReviewItem:
+        alternatives = [fa.angle for fa in fused if fa.angle != packet.chosen_angle][:3]
+        mem_ctx = [m.content for m in (*memory.episodic, *memory.semantic)][:4]
+        attribution = AgentAttribution(
+            research_chosen=packet.chosen_angle,
+            research_alternatives=alternatives,
+            timing_velocity=timing.velocity.verdict.value,
+            timing_velocity_confidence=timing.velocity.confidence,
+            timing_gaps=[g.angle for g in timing.gaps.gaps if g.is_open],
+            timing_citation=timing.citation.presence.value,
+            memory_context=mem_ctx,
+            copy_output_seconds=copy_secs,
+            quality={"voice": quality.voice, "narrative": quality.narrative,
+                     "format": quality.format, "hook": quality.hook,
+                     "coherence": quality.coherence, "overall": quality.overall},
+        )
+        return ReviewItem(
+            job_id=jid, brand_id=self._brand.brand_id, status="staged_for_review",
+            content_format=fmt, chosen_angle=packet.chosen_angle,
+            x_thread=copy.x_thread, ig_caption=copy.ig_caption,
+            youtube_script=copy.youtube_script, asset_url=asset.asset_url,
+            quality_overall=quality.overall, quality_route=quality.route.value,
+            auto_eligible=auto_eligible, platforms=bundle.plan.platforms,
+            attribution=attribution,
+        )

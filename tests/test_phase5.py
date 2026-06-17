@@ -90,7 +90,7 @@ async def test_prompt_engineer_injects_placeholder():
 async def test_production_single_fire():
     brand = load_brand()
     cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
-    backend = MockProductionBackend(cost_usd=0.30)
+    backend = MockProductionBackend(video_cost=0.30)
     agent = ProductionAgent(backend, CostGuard(daily_budget_usd=25.0, cost_sink=cost),
                             ValidationGate(dl), brand.brand_id)
     po = PromptEngineerOutput(higgsfield_prompt=f"{brand.character.placeholder} scene",
@@ -98,7 +98,7 @@ async def test_production_single_fire():
     res = await agent.run(prompt=po, character_element_id=brand.character.higgsfield_element_id, job_id="j")
     check("production returns ready asset", isinstance(res, ProductionResult) and res.status == "ready")
     check("render fired exactly once (never looped)", backend.calls == 1, f"calls={backend.calls}")
-    check("render cost logged as external", cost.entries[0]["model"] == "mock" and cost.entries[0]["usd"] == 0.30)
+    check("render cost logged with format tag", cost.entries[0]["model"] == "mock:video" and cost.entries[0]["usd"] == 0.30)
 
 
 async def test_quality_routing():

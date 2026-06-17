@@ -79,6 +79,10 @@ class ProceduralMemory:
         self._refs = reference_set or []
         self._threshold = voice_threshold
 
+    @property
+    def voice_threshold(self) -> float:
+        return self._threshold
+
     # --- read --------------------------------------------------------------
     async def active_prompt(self, *, brand_id: str, agent: str) -> Optional[str]:
         rec = await self._backend.active_procedural(brand_id=brand_id, agent=agent)

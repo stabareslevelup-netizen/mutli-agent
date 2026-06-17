@@ -7,12 +7,16 @@ voice: "dark editorial, authoritative, cinematic, Chicana-led physical AI perspe
 pillars:
   - id: ai_gets_a_body
     desc: "Physical AI entering the world — robots, embodied systems, deployment stories"
+    format: video
   - id: company_intel
     desc: "What companies in physical AI are actually building and deciding"
+    format: image          # company intel can move fast — image or text_only
   - id: deployment_reality
     desc: "What really happens when physical AI meets real environments"
+    format: video          # story/depth -> video
   - id: incident_file
     desc: "When physical AI fails, what we learn, what it means"
+    format: video          # narrative -> video
 character:
   name: OCHO
   higgsfield_element_id: "29906817-e1ec-4683-919c-71a3c7fea905"

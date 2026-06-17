@@ -15,12 +15,13 @@ from typing import Optional
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
-from engine.core.models import PostingMode
+from engine.core.models import ContentFormat, PostingMode
 
 
 class Pillar(BaseModel):
     id: str
     desc: str = ""
+    format: Optional[ContentFormat] = None   # preferred content format for this pillar
 
 
 class Character(BaseModel):

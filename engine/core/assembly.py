@@ -32,7 +32,9 @@ from engine.core.validation_gate import ValidationGate
 from engine.memory.backend import InMemoryBackend, MemoryBackend
 from engine.memory.episodic import EpisodicMemory
 from engine.memory.narrative import NarrativeMemory
+from engine.memory.procedural import ProceduralMemory
 from engine.memory.semantic import SemanticMemory
+from engine.core.review_store import InMemoryReviewStore
 from engine.tools.higgsfield_mcp import MockProductionBackend, ProductionBackend
 from engine.tools.social_apis import InstagramAdapter, XAdapter, YouTubeAdapter
 
@@ -44,6 +46,9 @@ class AssembledEngine:
     cost_sink: Any
     dead_letter: Any
     memory: tuple  # (episodic, semantic, narrative)
+    review_store: Any = None
+    procedural: Any = None
+    distribution: Any = None
 
 
 def build_orchestrator(brand: BrandConfig, *, llm: Optional[Any] = None,
@@ -64,8 +69,14 @@ def build_orchestrator(brand: BrandConfig, *, llm: Optional[Any] = None,
     epi = EpisodicMemory(be, emb)
     sem = SemanticMemory(be, emb)
     nar = NarrativeMemory(be, emb)
+    proc = ProceduralMemory(be, reference_set=[brand.voice], voice_threshold=0.2)
+    review_store = InMemoryReviewStore()
 
     prod = production_backend or MockProductionBackend()  # real render needs MCP/egress
+
+    dist = DistributionAgent(
+        [XAdapter(link_mode="reply"), InstagramAdapter(), YouTubeAdapter()],
+        cg, gate, brand.brand_id, dead_letter_sink=dl)
 
     agents = OrchestratorAgents(
         research=ResearchAgent(ctx),
@@ -76,11 +87,11 @@ def build_orchestrator(brand: BrandConfig, *, llm: Optional[Any] = None,
         prompt_engineer=PromptEngineerAgent(ctx),
         production=ProductionAgent(prod, cg, gate, brand.brand_id),
         quality=QualityAgent(ctx),
-        distribution=DistributionAgent(
-            [XAdapter(link_mode="reply"), InstagramAdapter(), YouTubeAdapter()],
-            cg, gate, brand.brand_id, dead_letter_sink=dl),
+        distribution=dist,
     )
     orch = Orchestrator(agents=agents, job_store=job_store or InMemoryJobStore(),
-                        cost_guard=cg, brand=brand, dead_letter_sink=dl)
+                        cost_guard=cg, brand=brand, dead_letter_sink=dl,
+                        review_store=review_store)
     return AssembledEngine(orchestrator=orch, cost_guard=cg, cost_sink=cost_sink,
-                           dead_letter=dl, memory=(epi, sem, nar))
+                           dead_letter=dl, memory=(epi, sem, nar),
+                           review_store=review_store, procedural=proc, distribution=dist)
