@@ -12,9 +12,12 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))  # resolve API keys for the server process
 
 from engine.core.brand_loader import BrandConfig, load_brand
 
