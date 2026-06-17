@@ -46,15 +46,18 @@ _C = '{"answer_text":"The Robot Report is cited.","cited_sources":["The Robot Re
 _COPY = '{"x_thread":["t1","t2","t3"],"ig_caption":"cap","youtube_script":"yt"}'
 _PROMPT = '{"higgsfield_prompt":"a cinematic scene"}'
 _Q = '{"voice":0.9,"narrative":0.9,"format":0.9,"hook":0.9,"coherence":0.9,"reasons":["ok"]}'
+_SK = ('{"disputes":"d","hidden_assumptions":"h","alternative_explanations":"a",'
+       '"overstatement":"o","skeptic_summary":"rests on a single source","confidence_adjustment":-0.05}')
 
 
 class SmartFakeLLM:
     async def complete(self, *, model, system, user, tools=None, max_tokens=2048, output_schema=None, **kw):
         s = system.lower()
-        text = ("{}" if True else "")
+        text = "{}"
         if "research analyst" in s: text = _R
         elif "web research tool" in s: text = _S
         elif "answer-engine" in s: text = _C
+        elif "adversarial" in s: text = _SK
         elif "copywriter" in s: text = _COPY
         elif "prompt engineer" in s: text = _PROMPT
         elif "quality reviewer" in s: text = _Q
@@ -184,7 +187,7 @@ def test_http_surface():
             check("GET /review/job has attribution", "attribution" in detail and detail["attribution"]["research_chosen"])
             appr = c.post(f"/review/job/{jid}/approve").json()
             check("POST approve -> approved", appr["status"] == "approved")
-            check("GET / serves dashboard html", "THE 10 AGENTS BUILT THIS" in c.get("/").text)
+            check("GET / serves dashboard html", "THE 11 AGENTS BUILT THIS" in c.get("/").text)
 
 
 async def main_async() -> int:

@@ -20,6 +20,7 @@ from engine.agents.production import ProductionAgent
 from engine.agents.prompt_engineer import PromptEngineerAgent
 from engine.agents.quality import QualityAgent
 from engine.agents.research import ResearchAgent
+from engine.agents.skeptic import SkepticAgent
 from engine.agents.strategy import StrategyAgent
 from engine.agents.timing import TimingAgent
 from engine.core.brand_loader import BrandConfig
@@ -83,6 +84,7 @@ def build_orchestrator(brand: BrandConfig, *, llm: Optional[Any] = None,
         memory=MemoryAgent(epi, sem, nar),
         timing=TimingAgent(ctx),
         strategy=StrategyAgent(gate),
+        skeptic=SkepticAgent(ctx),
         copy=CopyAgent(ctx),
         prompt_engineer=PromptEngineerAgent(ctx),
         production=ProductionAgent(prod, cg, gate, brand.brand_id),

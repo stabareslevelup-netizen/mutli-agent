@@ -161,14 +161,16 @@ async function loadJob(id){
     </div>`;
   // attribution panel (screenshot-able)
   $("#attr").innerHTML = `
-    <h2>THE 10 AGENTS BUILT THIS</h2>
+    <h2>THE 11 AGENTS BUILT THIS</h2>
     <div class="agentcard"><div class="who">RESEARCH <small>chosen angle + alternatives</small></div>
       <div class="body">${esc(a.research_chosen)}
       ${(a.research_alternatives||[]).map(x=>`<div class="alt">${esc(x)}</div>`).join("")}</div></div>
     <div class="agentcard"><div class="who">TIMING <small>velocity · gaps · citation</small></div>
       <div class="body">velocity: <span class="verdict">${a.timing_velocity}</span> (conf ${(a.timing_velocity_confidence||0).toFixed(2)}) ·
-      citation: ${a.timing_citation}<br/>
+      citation: ${a.timing_citation} ${i.requires_hedging?'<span class="pill gap">verification mode — claims hedged</span>':''}<br/>
       open narrative gaps: ${(a.timing_gaps||[]).map(g=>`<span class="pill gap">${esc(g)}</span>`).join("")||"<span class='pill'>none</span>"}</div></div>
+    <div class="agentcard"><div class="who">SKEPTIC <small>adversarial review — finds the mistake first</small></div>
+      <div class="body">${esc(a.skeptic_summary)||"<span class='pill'>no caution flagged</span>"}</div></div>
     <div class="agentcard"><div class="who">MEMORY <small>relevant past context</small></div>
       <div class="body">${(a.memory_context||[]).map(m=>`<div class="alt">${esc(m)}</div>`).join("")||"<span class='pill'>cold start — no prior context</span>"}</div></div>
     <div class="agentcard"><div class="who">COPY <small>output time</small></div>

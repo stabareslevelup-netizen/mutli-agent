@@ -4,8 +4,10 @@ engine/agents/orchestrator.py — Orchestrator [PROVEN].
 Activates tiers, manages job state, routes, logs. NEVER generates content.
 
   Tier 1 (parallel):  Research || Memory(query) || Timing
-  Tier 2:             fusion -> Strategy -> StrategyPacket  (narrative = hard constraint)
+  Tier 2:             fusion -> Strategy -> Skeptic (adversarial review, informs)
   Tier 3 (parallel):  Copy || Prompt Engineer
+
+(11 agents total: the Skeptic is the 11th, added in Tier 2.)
   Tier 4:             Production (render) -> Quality (gate + route)
   Tier 5:             Distribution (stage; confirm-mode -> nothing publishes)
 
@@ -38,6 +40,7 @@ class OrchestratorAgents:
     memory: Any
     timing: Any
     strategy: Any
+    skeptic: Any
     copy: Any
     prompt_engineer: Any
     production: Any
@@ -97,13 +100,18 @@ class Orchestrator:
                                    entity=entity),
             )
 
-            # --- Tier 2: fusion + Strategy (hard constraint + format routing) --
+            # --- Tier 2: fusion + Strategy + Skeptic (adversarial review) -----
             await self._jobs.update(jid, current_tier=2)
             fused = fuse(research=research, memory=memory, timing=timing,
                          weights=brand.fusion_weights)
             packet = await self._a.strategy.decide(
                 fused=fused, constraints=memory.narrative, brand=brand, job_id=jid,
-                velocity=timing.velocity.verdict)
+                timing=timing)
+            # Skeptic reviews the chosen angle and informs Copy (never blocks)
+            skeptic = await self._a.skeptic.review(packet=packet, job_id=jid)
+            packet = packet.model_copy(update={
+                "skeptic_summary": skeptic.skeptic_summary,
+                "confidence_adjustment": skeptic.confidence_adjustment})
             fmt = packet.content_format
 
             # --- Tier 3: Copy (timed) + Prompt Engineer (skipped for text_only) -
@@ -192,10 +200,12 @@ class Orchestrator:
             quality={"voice": quality.voice, "narrative": quality.narrative,
                      "format": quality.format, "hook": quality.hook,
                      "coherence": quality.coherence, "overall": quality.overall},
+            skeptic_summary=packet.skeptic_summary,
         )
         return ReviewItem(
             job_id=jid, brand_id=self._brand.brand_id, status="staged_for_review",
-            content_format=fmt, chosen_angle=packet.chosen_angle,
+            content_format=fmt, pillar_id=packet.pillar_id,
+            requires_hedging=packet.requires_hedging, chosen_angle=packet.chosen_angle,
             x_thread=copy.x_thread, ig_caption=copy.ig_caption,
             youtube_script=copy.youtube_script, asset_url=asset.asset_url,
             quality_overall=quality.overall, quality_route=quality.route.value,

@@ -36,11 +36,16 @@ async def lifespan(app: FastAPI):
     # one shared engine so the review queue persists across requests
     from engine.core.assembly import build_orchestrator
     from engine.core.review_service import ReviewService
+    from engine.core.feedback_service import FeedbackService
     eng = build_orchestrator(app.state.brand)
     app.state.engine = eng
     app.state.review = ReviewService(
         review_store=eng.review_store, distribution=eng.distribution,
         procedural=eng.procedural, dead_letter_sink=eng.dead_letter, x_http=None)
+    epi, sem, _nar = eng.memory
+    app.state.feedback = FeedbackService(
+        review_store=eng.review_store, episodic=epi, semantic=sem,
+        procedural=eng.procedural, brand_id=app.state.brand.brand_id)
     yield
 
 
@@ -58,6 +63,12 @@ class RejectRequest(BaseModel):
 
 class ApprovalRequest(BaseModel):
     approved_by: str
+
+
+class FeedbackRequest(BaseModel):
+    # per-platform engagement metrics; manual paste works:
+    # {"engagement": {"x": {"views": 12000, "likes": 340, "shares": 22, "saves": 15, "replies": 8}}}
+    engagement: dict[str, dict[str, float]]
 
 
 @app.get("/healthz")
@@ -128,6 +139,14 @@ async def review_proposal_reject(proposal_id: int):
 @app.post("/review/rollback/{agent}")
 async def review_rollback(agent: str):
     return await app.state.review.rollback(agent=agent, brand_id=app.state.brand.brand_id)
+
+
+@app.post("/feedback/{job_id}")
+async def ingest_feedback(job_id: str, req: FeedbackRequest):
+    """Engagement ingest (Phase 9). Accepts manual input — paste the numbers
+    after posting by hand. Auto-updates episodic + semantic memory; surfaces a
+    procedural proposal when a cross-job pattern emerges (never auto-applies)."""
+    return await app.state.feedback.ingest(job_id=job_id, engagement=req.engagement)
 
 
 @app.get("/")

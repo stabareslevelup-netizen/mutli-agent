@@ -18,7 +18,10 @@ from typing import Optional, Protocol, runtime_checkable
 
 from engine.core.brand_loader import BrandConfig
 from engine.core.fusion import FusedAngle
-from engine.core.models import ContentFormat, NarrativeConstraint, StrategyPacket, VelocityVerdict
+from engine.core.models import (
+    CitationPresence, ContentFormat, NarrativeConstraint, StrategyPacket, TimingSignal,
+    VelocityVerdict,
+)
 from engine.core.validation_gate import ValidationGate
 
 # cues that mark a deep / narrative angle (favors video)
@@ -26,16 +29,23 @@ _DEEP_CUES = {"why", "inside", "story", "reality", "fails", "failure", "incident
               "learn", "lesson", "investigation", "aftermath", "postmortem", "deep"}
 
 
-def choose_content_format(velocity: VelocityVerdict, angle_text: str, pillars) -> ContentFormat:
-    """Format routing: pillar hint (config) is the baseline; a deep/narrative
-    angle favors video; high velocity (breaking) favors speed (image/text_only)
-    EXCEPT when the pillar leans video (depth wins). Default video."""
+def match_pillar(angle_text: str, pillars):
+    """Best lexical match of an angle to a brand pillar (or None)."""
     at = _tokens(angle_text)
     matched, best = None, 0.0
     for p in pillars:
         score = _jaccard(at, _tokens(f"{p.id} {p.desc}"))
         if score > best:
             best, matched = score, p
+    return matched
+
+
+def choose_content_format(velocity: VelocityVerdict, angle_text: str, pillars) -> ContentFormat:
+    """Format routing: pillar hint (config) is the baseline; a deep/narrative
+    angle favors video; high velocity (breaking) favors speed (image/text_only)
+    EXCEPT when the pillar leans video (depth wins). Default video."""
+    at = _tokens(angle_text)
+    matched = match_pillar(angle_text, pillars)
     base = (matched.format if (matched and matched.format) else ContentFormat.video)
     is_deep = bool(at & _DEEP_CUES) or base == ContentFormat.video
     breaking = velocity == VelocityVerdict.surging
@@ -94,18 +104,30 @@ class StrategyAgent:
 
     async def decide(self, *, fused: list[FusedAngle], constraints: list[NarrativeConstraint],
                      brand: BrandConfig, job_id: str,
-                     velocity: VelocityVerdict = VelocityVerdict.unknown) -> StrategyPacket:
+                     timing: Optional[TimingSignal] = None) -> StrategyPacket:
+        verdict = timing.velocity.verdict if timing else VelocityVerdict.unknown
+        citation = timing.citation.presence.value if timing else ""
+        vel_conf = timing.velocity.confidence if timing else 0.0
+        # Fix 1: hedge when citation is ambiguous OR velocity confidence is low
+        requires_hedging = (citation == CitationPresence.ambiguous.value) or (vel_conf < 0.6)
+
         for fa in fused:  # fusion already sorted best-first
             violating = [c for c in constraints if self._checker.violates(fa.angle, c)]
             if violating:
                 continue
-            fmt = choose_content_format(velocity, fa.angle, brand.pillars)
+            fmt = choose_content_format(verdict, fa.angle, brand.pillars)
+            mp = match_pillar(fa.angle, brand.pillars)
             packet = StrategyPacket(
                 chosen_angle=fa.angle,
                 rationale=(f"top fused score {fa.score} "
                            f"(research={fa.research:.2f}, memory={fa.memory:.2f}, "
-                           f"timing={fa.timing:.2f}); format={fmt.value}; no staked-position conflict"),
+                           f"timing={fa.timing:.2f}); format={fmt.value}; "
+                           f"hedging={'on' if requires_hedging else 'off'}; no staked-position conflict"),
                 content_format=fmt,
+                pillar_id=(mp.id if mp else ""),
+                citation_status=citation,
+                velocity_confidence=vel_conf,
+                requires_hedging=requires_hedging,
                 formats=brand.formats,
                 fusion_weights=brand.fusion_weights,
                 hard_constraints=constraints,

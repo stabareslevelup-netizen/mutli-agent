@@ -1,14 +1,19 @@
 """
 engine/agents/prompt_engineer.py — Prompt Engineer agent [PROVEN].
 
-Writes a Higgsfield video/image prompt from the {{character}} config: the
-backend rewrites the `<<<element_id>>>` placeholder into the reference
-character, so the prompt MUST embed it. Sonnet tier. Routes through cost_guard
-+ validation_gate. Brand-free: character/palette/style come from config.
+Two rules, both required on every render (Fix 3) — stated generically so the
+engine stays brand-free; the character identity is injected from the config:
 
-Guarantee: the placeholder is always present in the final prompt (injected if
-the model omits it), so the PromptEngineerOutput validator never trips on a
-model slip.
+  RULE A — the brand CHARACTER is ALWAYS the subject. The character element
+    placeholder <<<...>>> is always present; no other character is generated.
+    The character is the visual anchor of the brand.
+  RULE B — the SCENE MATCHES THE ARTICLE. The agent receives the chosen angle
+    and the matched pillar's visual mood (from config) and must build a scene
+    that is visually SPECIFIC to that story — never a generic void or default
+    environment. Pillar drives the mood; the angle drives the concrete scene.
+
+Brand palette/aesthetic always applies; IP-safety stays (no real brands/logos/
+products). Sonnet tier. Placeholder is force-injected if the model omits it.
 """
 from __future__ import annotations
 
@@ -16,26 +21,31 @@ from engine.agents.base import BaseAgent
 from engine.core.brand_loader import BrandConfig
 from engine.core.models import PromptEngineerOutput, StrategyPacket
 
-_SYSTEM = ("You are a cinematic prompt engineer for an image/video model. "
-           "Write ONE vivid prompt. You MUST include the exact token {placeholder} "
-           "verbatim where the character should appear. Return ONLY JSON, no fences.\n\n"
-           "IP SAFETY (avoid content-filter blocks): do NOT reference real-world "
-           "companies, brands, products, named robots or vehicles, logos, trademarks, "
-           "or recognizable real people. Place the character in original, generic, or "
-           "abstract environments described only through the character's own visual "
-           "system (the style/palette/encoding cues given below). Never depict on-screen "
-           "text, logos, or signage. Prefer invented or abstract settings over real, "
-           "identifiable locations. Keep the character vivid and specific — abstract the "
-           "ENVIRONMENT, never the character.")
+_SYSTEM = ("You are a cinematic prompt engineer for an image/video model.\n"
+           "RULE A: the character is ALWAYS {character} — include the exact token "
+           "{placeholder} verbatim where the character appears. Never invent another "
+           "character; {character} is the brand's visual anchor.\n"
+           "RULE B: build a scene that is visually SPECIFIC to the story you are given — "
+           "never a generic void or default room. The pillar mood sets the atmosphere; "
+           "the angle sets the concrete scene.\n"
+           "IP SAFETY: no real-world company names, brands, products, named robots/vehicles, "
+           "logos, trademarks, or identifiable real people; abstract the ENVIRONMENT, keep "
+           "the character vivid. Always apply the brand palette/aesthetic. Return ONLY JSON, no fences.")
 
-_USER = """Angle to depict: {angle}
+_USER = """Story angle (drives the specific scene): {angle}
+Pillar visual mood (drives atmosphere): {mood}
 
-Character token (use verbatim): {placeholder}
-Visual style: {style}
+Character: {character}   token (use verbatim): {placeholder}
+Brand visual style: {style}
 Palette: {palette}
 Visual encoding cues: {encoding}
 
-Return ONLY: {{"higgsfield_prompt":"<one cinematic prompt that contains the token verbatim>"}}"""
+Write ONE cinematic prompt: {character} ({placeholder}) inside a scene that concretely reflects
+this story's world (not a void), in the pillar's mood, brand palette, dark editorial, cinematic.
+Return ONLY: {{"higgsfield_prompt":"<one prompt containing the token verbatim>"}}"""
+
+_SCHEMA = {"type": "object", "properties": {"higgsfield_prompt": {"type": "string"}},
+           "required": ["higgsfield_prompt"], "additionalProperties": False}
 
 
 class PromptEngineerAgent(BaseAgent):
@@ -43,17 +53,19 @@ class PromptEngineerAgent(BaseAgent):
 
     async def run(self, *, packet: StrategyPacket, brand: BrandConfig, job_id: str) -> PromptEngineerOutput:
         ch = brand.character
-        schema = {"type": "object",
-                  "properties": {"higgsfield_prompt": {"type": "string"}},
-                  "required": ["higgsfield_prompt"], "additionalProperties": False}
-        raw = await self._complete_json(
-            system=_SYSTEM.format(placeholder=ch.placeholder),
-            user=_USER.format(angle=packet.chosen_angle, placeholder=ch.placeholder,
-                              style=ch.style, palette=", ".join(ch.palette),
-                              encoding=ch.visual_encoding),
-            job_id=job_id, max_tokens=900, output_schema=schema)
+        # RULE B: look up the matched pillar's visual mood (config-driven, brand-free engine)
+        mood = next((p.visual_mood for p in brand.pillars if p.id == packet.pillar_id), "")
+        if not mood:
+            mood = "dark editorial, cinematic, the character embodied in its environment"
 
-        # Guarantee the placeholder is embedded even if the model dropped it.
+        raw = await self._complete_json(
+            system=_SYSTEM.format(character=ch.name, placeholder=ch.placeholder),
+            user=_USER.format(angle=packet.chosen_angle, mood=mood, character=ch.name,
+                              placeholder=ch.placeholder, style=ch.style,
+                              palette=", ".join(ch.palette), encoding=ch.visual_encoding),
+            job_id=job_id, max_tokens=900, output_schema=_SCHEMA)
+
+        # RULE A guarantee: the placeholder is always embedded even if the model slipped.
         if isinstance(raw, dict):
             prompt = str(raw.get("higgsfield_prompt", "")).strip()
             if ch.placeholder not in prompt:

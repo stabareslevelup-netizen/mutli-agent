@@ -22,6 +22,7 @@ from engine.agents.production import ProductionAgent
 from engine.agents.prompt_engineer import PromptEngineerAgent
 from engine.agents.quality import QualityAgent
 from engine.agents.research import ResearchAgent
+from engine.agents.skeptic import SkepticAgent
 from engine.agents.strategy import StrategyAgent
 from engine.agents.timing import TimingAgent
 from engine.core.brand_loader import load_brand
@@ -58,6 +59,8 @@ _COPY = '{"x_thread":["robots are here","part two"],"ig_caption":"caption","yout
 _PROMPT = '{"higgsfield_prompt":"a cinematic scene of the character"}'
 _QUALITY_HI = '{"voice":0.9,"narrative":0.9,"format":0.9,"hook":0.9,"coherence":0.9,"reasons":["on voice"]}'
 _QUALITY_LO = '{"voice":0.2,"narrative":0.2,"format":0.2,"hook":0.2,"coherence":0.2,"reasons":["off voice"]}'
+_SKEPTIC = ('{"disputes":"d","hidden_assumptions":"h","alternative_explanations":"a",'
+            '"overstatement":"o","skeptic_summary":"rests on a single announcement","confidence_adjustment":-0.05}')
 
 
 class SmartFakeLLM:
@@ -77,6 +80,8 @@ class SmartFakeLLM:
             key, text = "search", _SEARCH
         elif "answer-engine" in s:
             key, text = "citation", _CITE
+        elif "adversarial" in s:
+            key, text = "skeptic", _SKEPTIC
         elif "copywriter" in s:
             key, text = "copy", _COPY
         elif "prompt engineer" in s:
@@ -101,7 +106,7 @@ def _build(llm, *, daily_budget=25.0, strategy_checker=None, narrative=None, pro
     epi, sem, nar = EpisodicMemory(be, NullEmbeddingProvider()), SemanticMemory(be, NullEmbeddingProvider()), NarrativeMemory(be, NullEmbeddingProvider())
     agents = OrchestratorAgents(
         research=ResearchAgent(ctx), memory=MemoryAgent(epi, sem, nar), timing=TimingAgent(ctx),
-        strategy=StrategyAgent(gate, checker=strategy_checker),
+        strategy=StrategyAgent(gate, checker=strategy_checker), skeptic=SkepticAgent(ctx),
         copy=CopyAgent(ctx), prompt_engineer=PromptEngineerAgent(ctx),
         production=ProductionAgent(MockProductionBackend(status=prod_status), cg, gate, brand.brand_id),
         quality=QualityAgent(ctx),

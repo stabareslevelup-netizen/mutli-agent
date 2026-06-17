@@ -226,10 +226,16 @@ class StrategyPacket(BaseModel):
     chosen_angle: str
     rationale: str = ""
     content_format: ContentFormat = ContentFormat.video
+    pillar_id: str = ""                  # matched pillar (drives Prompt Engineer mood)
+    citation_status: str = ""            # timing citation presence (for the verification gate)
+    velocity_confidence: float = 0.0
+    requires_hedging: bool = False       # Fix 1: hedge all claims when set
+    skeptic_summary: str = ""            # Fix 2: filled by the Skeptic Agent
+    confidence_adjustment: float = 0.0   # -0.1..0.0 from the Skeptic
     formats: list[str] = Field(default_factory=list)
     fusion_weights: dict[str, float] = Field(default_factory=dict)
     hard_constraints: list[NarrativeConstraint] = Field(default_factory=list)
-    inputs_digest: dict[str, float] = Field(default_factory=dict)  # per-signal contribution
+    inputs_digest: dict[str, float] = Field(default_factory=dict)   # per-signal contribution
 
     @field_validator("fusion_weights")
     @classmethod
@@ -237,6 +243,16 @@ class StrategyPacket(BaseModel):
         if v and abs(sum(v.values()) - 1.0) > 0.01:
             raise ValueError("fusion_weights must sum to 1.0")
         return v
+
+
+class SkepticReview(BaseModel):
+    """Adversarial review of the chosen angle (Tier 2; informs, never blocks)."""
+    disputes: str = ""                   # what an insider would dispute
+    hidden_assumptions: str = ""         # unstated assumptions
+    alternative_explanations: str = ""   # other readings of the same facts
+    overstatement: str = ""              # is scale/impact overstated
+    skeptic_summary: str                 # 2-3 sentences
+    confidence_adjustment: float = Field(0.0, ge=-0.1, le=0.0)  # never increases confidence
 
 
 # ===========================================================================
@@ -321,6 +337,7 @@ class AgentAttribution(BaseModel):
     memory_context: list[str] = Field(default_factory=list)
     copy_output_seconds: float = 0.0
     quality: dict[str, float] = Field(default_factory=dict)   # 5 dims + overall
+    skeptic_summary: str = ""                                 # Skeptic Agent (11th)
 
 
 class ReviewItem(BaseModel):
@@ -328,6 +345,8 @@ class ReviewItem(BaseModel):
     brand_id: str
     status: str
     content_format: ContentFormat
+    pillar_id: str = ""
+    requires_hedging: bool = False
     created_at: datetime = Field(default_factory=_utcnow)
     chosen_angle: str = ""
     x_thread: list[str] = Field(default_factory=list)
@@ -361,7 +380,7 @@ __all__ = [
     "CitationPresence", "DisambiguationGuard", "CitationSignal",
     "PrimarySourceSignal", "TimingSignal",
     "MemoryItem", "NarrativeConstraint", "MemoryQueryResult",
-    "ContentFormat", "StrategyPacket", "CopyOutput", "PromptEngineerOutput",
+    "ContentFormat", "StrategyPacket", "SkepticReview", "CopyOutput", "PromptEngineerOutput",
     "ProductionResult", "QualityRoute", "QualityScore",
     "PostingMode", "DistributionPlan",
     "AgentAttribution", "ReviewItem", "ProposalView",

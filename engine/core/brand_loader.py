@@ -22,6 +22,7 @@ class Pillar(BaseModel):
     id: str
     desc: str = ""
     format: Optional[ContentFormat] = None   # preferred content format for this pillar
+    visual_mood: str = ""                    # Prompt Engineer scene mood (Fix 3, config-driven)
 
 
 class Character(BaseModel):
