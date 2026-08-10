@@ -1,0 +1,26 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    env:
+      BRAND_CONFIG_PATH: brands/madre_de_maquinas.yaml
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - run: pip install -r requirements.txt
+
+      # All tests/test_phase*.py suites are self-contained (fake LLM, no
+      # network, no API keys) — see pyproject.toml for why plain `pytest`
+      # needs the python_functions override to collect these correctly.
+      - run: pytest -v
