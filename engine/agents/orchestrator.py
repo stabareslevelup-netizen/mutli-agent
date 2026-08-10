@@ -60,13 +60,14 @@ class Orchestrator:
 
     def __init__(self, *, agents: OrchestratorAgents, job_store: JobStore,
                  cost_guard: CostGuard, brand: BrandConfig, dead_letter_sink=None,
-                 review_store=None):
+                 review_store=None, notifier=None):
         self._a = agents
         self._jobs = job_store
         self._cost = cost_guard
         self._brand = brand
         self._dl = dead_letter_sink
         self._reviews = review_store
+        self._notifier = notifier   # optional "something's waiting" push alert
 
     async def run(self, *, topic: str, entity: Optional[str] = None,
                   trigger: str = "manual", critical: bool = False) -> JobResult:
@@ -147,6 +148,19 @@ class Orchestrator:
                                            bundle, copy_secs)
             if self._reviews is not None:
                 await self._reviews.add(item=item, bundle=bundle)
+            if self._notifier is not None:
+                # best-effort: wrapped independently of the outer try/except
+                # so a misbehaving notifier can never overwrite an already-
+                # successful job's status to "failed" (see notify.py — the
+                # real SlackNotifier also never raises, but this guarantee
+                # must not depend on that implementation detail).
+                try:
+                    await self._notifier.notify_staged(
+                        job_id=jid, chosen_angle=packet.chosen_angle,
+                        quality_overall=quality.overall,
+                        requires_hedging=packet.requires_hedging, trigger=trigger)
+                except Exception:
+                    pass
 
             return result("staged_for_review", **base, bundle=bundle, review_item=item)
 

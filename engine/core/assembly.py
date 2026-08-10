@@ -83,9 +83,10 @@ def build_orchestrator(brand: BrandConfig, *, llm: Optional[Any] = None,
         quality=QualityAgent(ctx),
         distribution=dist,
     )
+    from engine.tools.notify import build_notifier_from_env
     orch = Orchestrator(agents=agents, job_store=job_store or InMemoryJobStore(),
                         cost_guard=cg, brand=brand, dead_letter_sink=dl,
-                        review_store=review_store)
+                        review_store=review_store, notifier=build_notifier_from_env())
     return AssembledEngine(orchestrator=orch, cost_guard=cg, cost_sink=cost_sink,
                            dead_letter=dl, memory=(epi, sem, nar),
                            review_store=review_store, procedural=proc, distribution=dist)
