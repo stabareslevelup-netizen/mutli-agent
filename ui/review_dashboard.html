@@ -146,7 +146,7 @@ async function loadJob(id){
     </div>`;
   // attribution panel (screenshot-able)
   $("#attr").innerHTML = `
-    <h2>THE 9 AGENTS BUILT THIS</h2>
+    <h2>AGENTS THAT BUILT THIS</h2>
     <div class="agentcard"><div class="who">RESEARCH <small>chosen angle + alternatives</small></div>
       <div class="body">${esc(a.research_chosen)}
       ${(a.research_alternatives||[]).map(x=>`<div class="alt">${esc(x)}</div>`).join("")}</div></div>
