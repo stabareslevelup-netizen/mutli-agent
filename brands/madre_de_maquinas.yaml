@@ -1,0 +1,28 @@
+# brands/madre_de_maquinas.yaml
+# The ONLY brand-specific file. The engine reads this at runtime and contains
+# zero hardcoded brand strings (see grep proof in the Phase 1 report).
+brand_id: madre_de_maquinas
+display_name: "Madre de Máquinas"
+voice: "dark editorial, authoritative, cinematic, Chicana-led physical AI perspective. Never corporate. Never generic. Always specific."
+pillars:
+  - id: ai_gets_a_body
+    desc: "Physical AI entering the world — robots, embodied systems, deployment stories"
+  - id: company_intel
+    desc: "What companies in physical AI are actually building and deciding"
+  - id: deployment_reality
+    desc: "What really happens when physical AI meets real environments"
+  - id: incident_file
+    desc: "When physical AI fails, what we learn, what it means"
+character_name: OCHO      # persona name; used as a citation-monitoring alias
+formats:                 # output formats the Copy agent must produce
+  - x_thread
+  - ig_caption
+  - youtube_script
+fusion_weights:          # tunable per brand; STARTING POINT, not gospel. Must sum to 1.0
+  research: 0.35
+  memory: 0.40
+  timing: 0.25
+budget:
+  daily_usd: 25.00       # cost_guard halts non-critical generation past this
+posting_mode: confirm    # confirm | scheduled | auto  (v1 = confirm)
+credentials_ref: env     # where to resolve API keys; never the keys themselves

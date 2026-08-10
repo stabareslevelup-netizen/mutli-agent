@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Review — Media Engine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --charcoal:#15161a; --charcoal-2:#1d1f25; --charcoal-3:#262931;
+    --pink:#ff3d8b; --pink-soft:#ff8fbf; --matte:#c9c7c2; --muted:#7e8089;
+    --amber:#ffb347; --line:#33363f; --ok:#3ad29f; --bad:#ff5d5d;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--charcoal);color:var(--matte);
+    font-family:"Space Mono",ui-monospace,monospace;font-size:13px;line-height:1.5}
+  h1,h2,h3,.bebas{font-family:"Bebas Neue",Impact,sans-serif;letter-spacing:.04em;font-weight:400}
+  header{display:flex;align-items:baseline;gap:16px;padding:18px 24px;border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg,var(--charcoal-2),var(--charcoal))}
+  header h1{font-size:30px;margin:0;color:#fff}
+  header .accent{color:var(--pink)}
+  header .sub{color:var(--muted);font-size:12px}
+  .wrap{display:grid;grid-template-columns:260px 1fr;min-height:calc(100vh - 67px)}
+  /* queue */
+  .queue{border-right:1px solid var(--line);padding:14px;overflow:auto}
+  .queue h2{font-size:18px;color:var(--matte);margin:4px 0 12px}
+  .qitem{padding:10px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;cursor:pointer;
+    background:var(--charcoal-2);transition:border-color .15s}
+  .qitem:hover{border-color:var(--pink)}
+  .qitem.active{border-color:var(--pink);box-shadow:0 0 0 1px var(--pink) inset}
+  .qitem .angle{color:#fff;font-size:12px;margin-bottom:6px}
+  .tag{display:inline-block;font-size:10px;padding:2px 7px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
+  /* panels */
+  .panels{display:grid;grid-template-columns:1fr 1fr;gap:0}
+  .panel{padding:22px 26px;overflow:auto}
+  .panel.content{border-right:1px solid var(--line)}
+  .panel h2{font-size:22px;color:#fff;margin:0 0 14px}
+  .label{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.12em;margin:14px 0 6px}
+  .copy-box{background:var(--charcoal-2);border:1px solid var(--line);border-radius:8px;padding:12px;white-space:pre-wrap}
+  .tweet{padding:8px 0;border-bottom:1px dashed var(--line)}
+  .tweet:last-child{border-bottom:none}
+  .scores{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+  .score{background:var(--charcoal-3);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:78px}
+  .score .v{font-family:"Bebas Neue";font-size:26px;color:#fff}
+  .score .k{font-size:10px;color:var(--muted);text-transform:uppercase}
+  .score.overall .v{color:var(--pink)}
+  .actions{display:flex;gap:12px;margin-top:20px}
+  button{font-family:"Space Mono";font-size:13px;border-radius:8px;padding:11px 18px;border:1px solid var(--line);
+    background:var(--charcoal-3);color:var(--matte);cursor:pointer}
+  button.approve{background:var(--pink);border-color:var(--pink);color:#15161a;font-weight:700}
+  button.reject{border-color:var(--bad);color:var(--bad)}
+  button:hover{filter:brightness(1.1)}
+  /* attribution = the screenshot-able story */
+  .attr{background:linear-gradient(160deg,var(--charcoal-2),var(--charcoal));}
+  .agentcard{border:1px solid var(--line);border-left:3px solid var(--pink);border-radius:8px;
+    padding:12px 14px;margin-bottom:10px;background:rgba(255,61,139,.03)}
+  .agentcard .who{font-family:"Bebas Neue";font-size:16px;color:#fff;letter-spacing:.05em}
+  .agentcard .who small{font-family:"Space Mono";font-size:10px;color:var(--muted);letter-spacing:0}
+  .agentcard .body{margin-top:6px;color:var(--matte)}
+  .alt{color:var(--muted);font-size:12px;padding-left:14px;position:relative}
+  .alt:before{content:"↳";position:absolute;left:0;color:var(--pink)}
+  .pill{display:inline-block;background:var(--charcoal-3);border:1px solid var(--line);border-radius:99px;
+    padding:2px 9px;margin:2px 4px 2px 0;font-size:11px}
+  .pill.gap{border-color:var(--amber);color:var(--amber)}
+  .verdict{color:var(--pink);font-weight:700}
+  .watermark{margin-top:8px;color:var(--muted);font-size:10px;letter-spacing:.1em;text-transform:uppercase}
+  /* proposals */
+  .proposals{border-top:1px solid var(--line);padding:18px 26px}
+  .proposals h2{font-size:20px;color:#fff;margin:0 0 12px}
+  .prop{border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:10px;background:var(--charcoal-2)}
+  .prop .meta{color:var(--muted);font-size:11px;margin-bottom:8px}
+  .prop pre{white-space:pre-wrap;background:var(--charcoal-3);border:1px solid var(--line);border-radius:6px;padding:10px;margin:8px 0;color:var(--matte)}
+  .sim-ok{color:var(--ok)} .sim-bad{color:var(--bad)}
+  .empty{color:var(--muted);padding:20px;text-align:center}
+  .toast{position:fixed;bottom:20px;right:20px;background:var(--charcoal-3);border:1px solid var(--pink);
+    border-radius:8px;padding:12px 16px;color:#fff;display:none;max-width:380px}
+</style>
+</head>
+<body>
+<header>
+  <h1>MADRE DE <span class="accent">MÁQUINAS</span></h1>
+  <div class="sub">review console · confirm-mode · nothing publishes without a tap</div>
+</header>
+
+<div class="wrap">
+  <aside class="queue">
+    <h2>QUEUE</h2>
+    <div id="queue"></div>
+  </aside>
+
+  <main>
+    <div class="panels">
+      <section class="panel content" id="content">
+        <div class="empty">Select a staged piece from the queue.</div>
+      </section>
+      <section class="panel attr" id="attr">
+        <div class="empty">Agent attribution appears here — the proof of the build.</div>
+      </section>
+    </div>
+    <section class="proposals">
+      <h2>PROCEDURAL CHANGES <small style="color:var(--muted)">— guarded self-improvement</small></h2>
+      <div id="proposals"></div>
+    </section>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+let current = null;
+const toast = m => { const t=$("#toast"); t.textContent=m; t.style.display="block"; setTimeout(()=>t.style.display="none",3200); };
+const esc = s => (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+
+async function loadQueue(){
+  const items = await (await fetch("/review/queue")).json();
+  const q = $("#queue");
+  if(!items.length){ q.innerHTML='<div class="empty">Queue empty.</div>'; return; }
+  q.innerHTML = items.map(i=>`
+    <div class="qitem ${i.job_id===current?'active':''}" onclick="loadJob('${i.job_id}')">
+      <div class="angle">${esc(i.chosen_angle).slice(0,90)}</div>
+      <span class="tag">Q ${(i.quality_overall).toFixed(2)}</span>
+    </div>`).join("");
+}
+
+async function loadJob(id){
+  current = id;
+  const i = await (await fetch("/review/job/"+id)).json();
+  const a = i.attribution;
+  // content panel
+  $("#content").innerHTML = `
+    <h2>CONTENT <span class="tag">text-only</span></h2>
+    <div class="label">X thread</div>
+    <div class="copy-box">${(i.x_thread||[]).map(t=>`<div class="tweet">${esc(t)}</div>`).join("")}</div>
+    <div class="label">IG caption</div><div class="copy-box">${esc(i.ig_caption)}</div>
+    <div class="label">Quality</div>
+    <div class="scores">
+      ${["voice","narrative","format","hook","coherence"].map(k=>`<div class="score"><div class="v">${(a.quality[k]??0).toFixed(2)}</div><div class="k">${k}</div></div>`).join("")}
+      <div class="score overall"><div class="v">${(a.quality.overall??0).toFixed(2)}</div><div class="k">overall</div></div>
+    </div>
+    <div class="label">Staged platforms</div>
+    <div>${(i.platforms||[]).map(p=>`<span class="pill">${p}</span>`).join("")} ${i.auto_eligible?'':'<span class="pill gap">human review required</span>'}</div>
+    <div class="actions">
+      <button class="approve" onclick="approve('${i.job_id}')">✓ Approve — confirm publish</button>
+      <button class="reject" onclick="reject('${i.job_id}')">✕ Reject</button>
+    </div>`;
+  // attribution panel (screenshot-able)
+  $("#attr").innerHTML = `
+    <h2>THE 9 AGENTS BUILT THIS</h2>
+    <div class="agentcard"><div class="who">RESEARCH <small>chosen angle + alternatives</small></div>
+      <div class="body">${esc(a.research_chosen)}
+      ${(a.research_alternatives||[]).map(x=>`<div class="alt">${esc(x)}</div>`).join("")}</div></div>
+    <div class="agentcard"><div class="who">TIMING <small>velocity · gaps · citation</small></div>
+      <div class="body">velocity: <span class="verdict">${a.timing_velocity}</span> (conf ${(a.timing_velocity_confidence||0).toFixed(2)}) ·
+      citation: ${a.timing_citation} ${i.requires_hedging?'<span class="pill gap">verification mode — claims hedged</span>':''}<br/>
+      open narrative gaps: ${(a.timing_gaps||[]).map(g=>`<span class="pill gap">${esc(g)}</span>`).join("")||"<span class='pill'>none</span>"}</div></div>
+    <div class="agentcard"><div class="who">SKEPTIC <small>adversarial review — finds the mistake first</small></div>
+      <div class="body">${esc(a.skeptic_summary)||"<span class='pill'>no caution flagged</span>"}</div></div>
+    <div class="agentcard"><div class="who">MEMORY <small>relevant past context</small></div>
+      <div class="body">${(a.memory_context||[]).map(m=>`<div class="alt">${esc(m)}</div>`).join("")||"<span class='pill'>cold start — no prior context</span>"}</div></div>
+    <div class="agentcard"><div class="who">COPY <small>output time</small></div>
+      <div class="body">generated ${(i.x_thread||[]).length} tweets + caption + script in <span class="verdict">${a.copy_output_seconds}s</span></div></div>
+    <div class="agentcard"><div class="who">QUALITY <small>5-dimension score</small></div>
+      <div class="body">voice ${(a.quality.voice??0).toFixed(2)} · narrative ${(a.quality.narrative??0).toFixed(2)} · format ${(a.quality.format??0).toFixed(2)} · hook ${(a.quality.hook??0).toFixed(2)} · coherence ${(a.quality.coherence??0).toFixed(2)} → <span class="verdict">${(a.quality.overall??0).toFixed(2)}</span></div></div>
+    <div class="watermark">⬢ generated by Madre de Máquinas · multi-agent media engine</div>`;
+  loadQueue();
+}
+
+async function approve(id){
+  const r = await (await fetch("/review/job/"+id+"/approve",{method:"POST"})).json();
+  toast("Approved — "+(r.note||("published: "+(r.published||[]).join(", ")||"staged")));
+  current=null; $("#content").innerHTML='<div class="empty">Approved.</div>'; loadQueue();
+}
+async function reject(id){
+  const reason = prompt("Reject reason (dead-lettered):","off-voice");
+  if(reason===null) return;
+  await fetch("/review/job/"+id+"/reject",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({reason})});
+  toast("Rejected — dead-lettered."); current=null; $("#content").innerHTML='<div class="empty">Rejected.</div>'; loadQueue();
+}
+
+async function loadProposals(){
+  const ps = await (await fetch("/review/proposals")).json();
+  const el = $("#proposals");
+  if(!ps.length){ el.innerHTML='<div class="empty">No pending prompt changes.</div>'; return; }
+  el.innerHTML = ps.map(p=>{
+    const ok = (p.voice_similarity??0) >= p.voice_threshold;
+    return `<div class="prop">
+      <div class="meta">${p.agent_name} · v${p.current_version} → proposed · triggered by: ${esc(JSON.stringify(p.performance_data))}</div>
+      <pre>${esc(p.proposed_prompt)}</pre>
+      voice similarity: <span class="${ok?'sim-ok':'sim-bad'}">${(p.voice_similarity??0).toFixed(3)}</span>
+      / threshold ${p.voice_threshold} ${ok?'✓ passes':'✕ would block'}
+      <div class="actions">
+        <button class="approve" onclick="approveProp(${p.proposal_id})">Approve change</button>
+        <button class="reject" onclick="rejectProp(${p.proposal_id})">Reject</button>
+        <button onclick="rollback('${p.agent_name}')">Rollback ${p.agent_name}</button>
+      </div></div>`;
+  }).join("");
+}
+async function approveProp(id){
+  const r = await (await fetch("/review/proposals/"+id+"/approve",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({approved_by:"reviewer"})})).json();
+  toast("Proposal: "+r.status); loadProposals();
+}
+async function rejectProp(id){ await fetch("/review/proposals/"+id+"/reject",{method:"POST"}); toast("Proposal rejected"); loadProposals(); }
+async function rollback(agent){ const r=await (await fetch("/review/rollback/"+agent,{method:"POST"})).json(); toast("Rollback: "+r.status); loadProposals(); }
+
+loadQueue(); loadProposals();
+setInterval(loadQueue, 8000);
+</script>
+</body>
+</html>
