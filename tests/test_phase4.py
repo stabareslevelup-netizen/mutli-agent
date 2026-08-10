@@ -253,5 +253,13 @@ async def main() -> int:
     return 1 if failures else 0
 
 
+def pytest_phase4():
+    """pytest entrypoint — runs the suite above (167-check style) and asserts
+    real success. Direct-run entrypoint (`python -m tests.test_phase4`) is
+    unaffected below."""
+    import asyncio
+    assert asyncio.run(main()) == 0, "phase 4 suite reported failures — see printed PASS/FAIL above"
+
+
 if __name__ == "__main__":
     raise SystemExit(asyncio.run(main()))

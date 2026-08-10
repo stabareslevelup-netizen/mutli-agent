@@ -1,0 +1,15 @@
+[tool.pytest.ini_options]
+# The tests/test_phase*.py files are custom async check()-based suites (each
+# has its own PASS/FAIL runner and a `python -m tests.test_phaseN` entrypoint)
+# predating pytest adoption. Their internal helper functions are named test_*
+# for readability, which collides with pytest's default collection pattern —
+# pytest would try to run them directly as async tests and either error
+# (no async plugin installed) or silently mark them "passed" without ever
+# checking their real PASS/FAIL results. Both are wrong signals for CI.
+#
+# Fix: only collect functions named pytest_*. Each phase file exposes exactly
+# one — a synchronous wrapper that runs the file's own async runner to
+# completion and asserts on its real exit code. See tests/test_phase*.py.
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["pytest_*"]

@@ -9,3 +9,4 @@ PyYAML>=6.0
 python-dotenv>=1.0
 httpx>=0.27
 anthropic>=0.69          # Tier-1 agents: Claude + server-side web_search tool
+pytest>=8.0               # CI test runner (see pyproject.toml for collection config)
