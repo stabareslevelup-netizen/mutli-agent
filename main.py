@@ -37,11 +37,18 @@ async def lifespan(app: FastAPI):
     from engine.core.assembly import build_orchestrator
     from engine.core.review_service import ReviewService
     from engine.core.feedback_service import FeedbackService
+    from engine.tools.x_client import build_x_client_from_env
     eng = build_orchestrator(app.state.brand)
     app.state.engine = eng
+    # x_http stays None (graceful degrade) until X_API_KEY/X_API_KEY_SECRET/
+    # X_ACCESS_TOKEN/X_ACCESS_TOKEN_SECRET are all set in .env — the human
+    # confirm gate in ReviewService.approve() is identical either way; this
+    # only decides whether an approved post actually reaches X or is marked
+    # "approved, publish pending credentials".
     app.state.review = ReviewService(
         review_store=eng.review_store, distribution=eng.distribution,
-        procedural=eng.procedural, dead_letter_sink=eng.dead_letter, x_http=None)
+        procedural=eng.procedural, dead_letter_sink=eng.dead_letter,
+        x_http=build_x_client_from_env())
     epi, sem, _nar = eng.memory
     app.state.feedback = FeedbackService(
         review_store=eng.review_store, episodic=epi, semantic=sem,

@@ -91,7 +91,7 @@ class SmartFakeLLM:
         return text, Usage(input_tokens=300, output_tokens=100)
 
 
-def _build(llm, *, daily_budget=25.0, strategy_checker=None):
+def _build(llm, *, daily_budget=25.0, strategy_checker=None, notifier=None):
     brand = load_brand()
     cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
     cg = CostGuard(daily_budget_usd=daily_budget, cost_sink=cost)
@@ -104,7 +104,8 @@ def _build(llm, *, daily_budget=25.0, strategy_checker=None):
         strategy=StrategyAgent(gate, checker=strategy_checker), skeptic=SkepticAgent(ctx),
         copy=CopyAgent(ctx), quality=QualityAgent(ctx),
         distribution=DistributionAgent([XAdapter()], cg, gate, brand.brand_id, dead_letter_sink=dl))
-    orch = Orchestrator(agents=agents, job_store=InMemoryJobStore(), cost_guard=cg, brand=brand)
+    orch = Orchestrator(agents=agents, job_store=InMemoryJobStore(), cost_guard=cg, brand=brand,
+                        notifier=notifier)
     return orch, cost, dl, nar
 
 
@@ -159,12 +160,27 @@ async def test_budget_halt():
           len(llm.calls) == before_calls, f"calls={len(llm.calls) - before_calls}")
 
 
+async def test_raising_notifier_never_fails_the_job():
+    class RaisingNotifier:
+        async def notify_staged(self, **kwargs):
+            raise ConnectionError("slack is down, and this notifier forgot to catch it")
+
+    orch, cost, dl, _ = _build(SmartFakeLLM(), notifier=RaisingNotifier())
+    res = await orch.run(topic="humanoid robots", entity="Figure")
+    check("notifier raising -> job still staged_for_review, not failed",
+          res.status == "staged_for_review", res.status)
+    job = await orch._jobs.get(res.job_id)
+    check("job state persisted as staged_for_review despite notifier exception",
+          job.status == "staged_for_review", job.status)
+
+
 async def main() -> int:
     await test_happy_path()
     await test_malformed_handoff_fails()
     await test_narrative_conflict()
     await test_quality_reject()
     await test_budget_halt()
+    await test_raising_notifier_never_fails_the_job()
     for status, name, detail in results:
         line = f"  [{status}] {name}"
         if detail and status == FAIL:
