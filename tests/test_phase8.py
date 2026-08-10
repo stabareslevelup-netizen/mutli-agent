@@ -128,7 +128,7 @@ def test_http_surface():
             check("GET /review/job has attribution", "attribution" in detail and detail["attribution"]["research_chosen"])
             appr = c.post(f"/review/job/{jid}/approve").json()
             check("POST approve -> approved", appr["status"] == "approved")
-            check("GET / serves dashboard html", "THE 9 AGENTS BUILT THIS" in c.get("/").text)
+            check("GET / serves dashboard html", "AGENTS THAT BUILT THIS" in c.get("/").text)
 
 
 async def main_async() -> int:
