@@ -216,17 +216,10 @@ class MemoryQueryResult(BaseModel):
 # ===========================================================================
 # Tier 2 — Strategy (fusion output)
 # ===========================================================================
-class ContentFormat(str, Enum):
-    video = "video"          # cinematic character render (default for deep angles)
-    image = "image"          # static render — faster/cheaper, speed-sensitive angles
-    text_only = "text_only"  # copy stands alone, no visual
-
-
 class StrategyPacket(BaseModel):
     chosen_angle: str
     rationale: str = ""
-    content_format: ContentFormat = ContentFormat.video
-    pillar_id: str = ""                  # matched pillar (drives Prompt Engineer mood)
+    pillar_id: str = ""                  # matched pillar (feedback-loop correlation)
     citation_status: str = ""            # timing citation presence (for the verification gate)
     velocity_confidence: float = 0.0
     requires_hedging: bool = False       # Fix 1: hedge all claims when set
@@ -256,7 +249,7 @@ class SkepticReview(BaseModel):
 
 
 # ===========================================================================
-# Tier 3 — Production-input agents
+# Tier 3 — Copy
 # ===========================================================================
 class CopyOutput(BaseModel):
     x_thread: list[str] = Field(default_factory=list)
@@ -264,26 +257,9 @@ class CopyOutput(BaseModel):
     youtube_script: str = ""
 
 
-class PromptEngineerOutput(BaseModel):
-    higgsfield_prompt: str
-    character_placeholder: str
-
-    @model_validator(mode="after")
-    def _placeholder_present(self) -> "PromptEngineerOutput":
-        if self.character_placeholder and self.character_placeholder not in self.higgsfield_prompt:
-            raise ValueError("higgsfield_prompt must embed the character placeholder")
-        return self
-
-
 # ===========================================================================
-# Tier 4 — Production + Quality
+# Tier 4 — Quality
 # ===========================================================================
-class ProductionResult(BaseModel):
-    asset_id: Optional[str] = None
-    asset_url: Optional[str] = None
-    status: str = "pending"   # pending | ready | failed
-
-
 class QualityRoute(str, Enum):
     publish_queue = "publish_queue"
     revise = "revise"
@@ -324,7 +300,7 @@ class DistributionPlan(BaseModel):
 
 
 # ===========================================================================
-# Review UI (Phase 8) — the screenshot-able "my 10 agents built this" record
+# Review UI (Phase 8) — the screenshot-able "my agents built this" record
 # ===========================================================================
 class AgentAttribution(BaseModel):
     """The agent story behind a piece — designed to be displayed/screenshotted."""
@@ -337,14 +313,13 @@ class AgentAttribution(BaseModel):
     memory_context: list[str] = Field(default_factory=list)
     copy_output_seconds: float = 0.0
     quality: dict[str, float] = Field(default_factory=dict)   # 5 dims + overall
-    skeptic_summary: str = ""                                 # Skeptic Agent (11th)
+    skeptic_summary: str = ""                                 # Skeptic Agent
 
 
 class ReviewItem(BaseModel):
     job_id: str
     brand_id: str
     status: str
-    content_format: ContentFormat
     pillar_id: str = ""
     requires_hedging: bool = False
     created_at: datetime = Field(default_factory=_utcnow)
@@ -352,7 +327,6 @@ class ReviewItem(BaseModel):
     x_thread: list[str] = Field(default_factory=list)
     ig_caption: str = ""
     youtube_script: str = ""
-    asset_url: Optional[str] = None
     quality_overall: float = 0.0
     quality_route: str = ""
     auto_eligible: bool = False
@@ -380,8 +354,8 @@ __all__ = [
     "CitationPresence", "DisambiguationGuard", "CitationSignal",
     "PrimarySourceSignal", "TimingSignal",
     "MemoryItem", "NarrativeConstraint", "MemoryQueryResult",
-    "ContentFormat", "StrategyPacket", "SkepticReview", "CopyOutput", "PromptEngineerOutput",
-    "ProductionResult", "QualityRoute", "QualityScore",
+    "StrategyPacket", "SkepticReview", "CopyOutput",
+    "QualityRoute", "QualityScore",
     "PostingMode", "DistributionPlan",
     "AgentAttribution", "ReviewItem", "ProposalView",
 ]

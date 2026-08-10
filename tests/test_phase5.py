@@ -1,12 +1,13 @@
 """
 Phase 5 unit tests — FREE (fake LLM / mock backends, no API spend, no network).
 
-Covers Copy, Prompt Engineer, Production, Quality, Distribution including:
-  - cost_guard tiering (Copy/PromptEng=Sonnet, Quality=Opus) + external costs
+Covers Copy, Quality, Distribution (text-only pipeline: no Prompt Engineer /
+Production / Higgsfield — removed when video generation was dropped from scope):
+  - cost_guard tiering (Copy=Sonnet, Quality=Opus)
   - validation_gate on every handoff
-  - Production fires exactly ONCE (never loops)
-  - Quality: video ALWAYS human review; text auto only at >=0.85
-  - Distribution confirm-mode only; X cost link vs reply; IG/YT not live;
+  - Quality: text auto-eligible only at >=0.85
+  - Distribution confirm-mode only; X cost link vs reply; IG/YT not live
+    (both correctly excluded from staging when there's no media asset);
     auto/scheduled dormant; resilience + dead-letter on publish failure
 """
 from __future__ import annotations
@@ -17,19 +18,13 @@ import os
 from engine.agents.base import AgentContext
 from engine.agents.copy_agent import CopyAgent
 from engine.agents.distribution import DistributionAgent, PostingModeDisabled
-from engine.agents.production import ProductionAgent
-from engine.agents.prompt_engineer import PromptEngineerAgent
 from engine.agents.quality import QualityAgent
 from engine.core.brand_loader import load_brand
 from engine.core.cost_guard import CostGuard, InMemoryCostSink, MODEL_OPUS, MODEL_SONNET
 from engine.core.dead_letter import InMemoryDeadLetterSink
 from engine.core.llm import Usage
-from engine.core.models import (
-    CopyOutput, DistributionPlan, PostingMode, ProductionResult, PromptEngineerOutput,
-    QualityRoute, StrategyPacket,
-)
+from engine.core.models import CopyOutput, DistributionPlan, PostingMode, QualityRoute, StrategyPacket
 from engine.core.validation_gate import HandoffHalted, ValidationGate
-from engine.tools.higgsfield_mcp import MockProductionBackend
 from engine.tools.social_apis import (
     InstagramAdapter, PublishBlocked, XAdapter, YouTubeAdapter,
 )
@@ -75,32 +70,6 @@ async def test_copy():
     check("copy on Sonnet tier", cost.entries[0]["model"] == MODEL_SONNET)
 
 
-async def test_prompt_engineer_injects_placeholder():
-    brand = load_brand()
-    cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
-    # model OMITS the placeholder -> agent must inject it (validator would else fail)
-    agent = PromptEngineerAgent(_ctx(FakeLLM('{"higgsfield_prompt":"a cinematic robot scene"}'), cost, dl, brand))
-    out = await agent.run(packet=_packet(brand), brand=brand, job_id="j")
-    check("prompt engineer returns output", isinstance(out, PromptEngineerOutput))
-    check("placeholder injected when model omits it",
-          brand.character.placeholder in out.higgsfield_prompt)
-    check("prompt engineer on Sonnet tier", cost.entries[0]["model"] == MODEL_SONNET)
-
-
-async def test_production_single_fire():
-    brand = load_brand()
-    cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
-    backend = MockProductionBackend(video_cost=0.30)
-    agent = ProductionAgent(backend, CostGuard(daily_budget_usd=25.0, cost_sink=cost),
-                            ValidationGate(dl), brand.brand_id)
-    po = PromptEngineerOutput(higgsfield_prompt=f"{brand.character.placeholder} scene",
-                              character_placeholder=brand.character.placeholder)
-    res = await agent.run(prompt=po, character_element_id=brand.character.higgsfield_element_id, job_id="j")
-    check("production returns ready asset", isinstance(res, ProductionResult) and res.status == "ready")
-    check("render fired exactly once (never looped)", backend.calls == 1, f"calls={backend.calls}")
-    check("render cost logged with format tag", cost.entries[0]["model"] == "mock:video" and cost.entries[0]["usd"] == 0.30)
-
-
 async def test_quality_routing():
     brand = load_brand()
     cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
@@ -108,20 +77,15 @@ async def test_quality_routing():
     content = CopyOutput(x_thread=["a"], ig_caption="b", youtube_script="c")
 
     q_text, auto_text = await QualityAgent(_ctx(FakeLLM(hi), cost, dl, brand)).evaluate(
-        content=content, brand=brand, job_id="j", has_video=False)
+        content=content, brand=brand, job_id="j")
     check("quality on Opus tier", cost.entries[0]["model"] == MODEL_OPUS)
     check("high text -> publish_queue", q_text.route == QualityRoute.publish_queue)
     check("high text -> auto eligible (>=0.85)", auto_text is True)
 
-    cost2 = InMemoryCostSink()
-    q_vid, auto_vid = await QualityAgent(_ctx(FakeLLM(hi), cost2, dl, brand)).evaluate(
-        content=content, brand=brand, job_id="j", has_video=True)
-    check("VIDEO always human review (never auto)", auto_vid is False)
-
     lo = '{"voice":0.3,"narrative":0.3,"format":0.3,"hook":0.3,"coherence":0.3,"reasons":["off"]}'
     cost3 = InMemoryCostSink()
     q_lo, auto_lo = await QualityAgent(_ctx(FakeLLM(lo), cost3, dl, brand)).evaluate(
-        content=content, brand=brand, job_id="j", has_video=False)
+        content=content, brand=brand, job_id="j")
     check("low score -> reject", q_lo.route == QualityRoute.reject)
     check("low score -> not auto", auto_lo is False)
 
@@ -132,7 +96,7 @@ async def test_quality_malformed_halts():
     halted = False
     try:
         await QualityAgent(_ctx(FakeLLM("no json here"), cost, dl, brand)).evaluate(
-            content=CopyOutput(x_thread=["a"]), brand=brand, job_id="j", has_video=False)
+            content=CopyOutput(x_thread=["a"]), brand=brand, job_id="j")
     except HandoffHalted:
         halted = True
     check("malformed quality output halts + dead-letters", halted and len(dl.records) == 1)
@@ -158,14 +122,18 @@ async def test_distribution_confirm_only():
     adapters = [XAdapter(link_mode="reply"), InstagramAdapter(), YouTubeAdapter()]
     dist = DistributionAgent(adapters, CostGuard(daily_budget_usd=25.0, cost_sink=cost),
                              gate, brand.brand_id, dead_letter_sink=dl)
+    # text-only content: no media asset -> IG and YouTube correctly can't stage
+    # (both platforms require a media file to publish; that's a real constraint,
+    # not a bug — see social_apis.py)
     content = {"x_thread": ["robots are here", "thread part 2"], "ig_caption": "cap",
-               "youtube_script": "yt", "media_url": "https://cdn.example/x.mp4",
-               "asset_url": "https://cdn.example/x.mp4", "link": "https://madre.example/post"}
+               "youtube_script": "yt", "link": "https://madre.example/post"}
 
     bundle = await dist.stage(content=content, posting_mode=PostingMode.confirm, job_id="j")
     check("plan is confirm + staged + not published",
           bundle.plan.posting_mode == PostingMode.confirm and bundle.plan.staged and not bundle.plan.published)
-    check("all three platforms staged", set(bundle.staged) == {"x", "instagram", "youtube"})
+    check("only X stages for text-only content (IG/YT need media)", set(bundle.staged) == {"x"})
+    check("IG/YT dead-lettered as no-media, not crashed",
+          any("media" in r["error"].lower() or "video" in r["error"].lower() for r in dl.records))
 
     # X cost: reply mode -> 2 cheap text posts ($0.01) + 1 link reply ($0.20) = $0.22
     x_cost = bundle.staged["x"].estimated_cost_usd
@@ -186,15 +154,6 @@ async def test_distribution_confirm_only():
         blocked = True
     check("publish blocked without human confirm", blocked)
 
-    # IG / YT are not live -> publish blocked even when confirmed
-    ig_blocked = False
-    try:
-        await dist.confirm_publish(bundle=bundle, platform="instagram", http=object(),
-                                   confirmed=True, job_id="j")
-    except PublishBlocked:
-        ig_blocked = True
-    check("Instagram not live -> publish blocked", ig_blocked)
-
     # X live + confirmed -> publishes
     ok = await dist.confirm_publish(bundle=bundle, platform="x", http=FakeXHttp(),
                                     confirmed=True, job_id="j")
@@ -206,6 +165,19 @@ async def test_distribution_confirm_only():
                                       confirmed=True, job_id="j")
     check("X publish failure handled (not published)", fail.published is False)
     check("publish failure dead-lettered", len(dl.records) > pre)
+
+
+async def test_distribution_with_media_stages_ig():
+    # if an asset URL IS present (e.g. a manually-added image), IG can stage —
+    # proves the platform rule is about media presence, not a hardcoded skip
+    brand = load_brand()
+    cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
+    gate = ValidationGate(dl)
+    dist = DistributionAgent([InstagramAdapter()], CostGuard(daily_budget_usd=25.0, cost_sink=cost),
+                             gate, brand.brand_id, dead_letter_sink=dl)
+    content = {"ig_caption": "cap", "media_url": "https://cdn.example/x.jpg"}
+    bundle = await dist.stage(content=content, posting_mode=PostingMode.confirm, job_id="j")
+    check("IG stages when media_url is present", "instagram" in bundle.staged)
 
 
 async def test_auto_mode_dormant():
@@ -222,11 +194,10 @@ async def test_auto_mode_dormant():
 
 async def main() -> int:
     await test_copy()
-    await test_prompt_engineer_injects_placeholder()
-    await test_production_single_fire()
     await test_quality_routing()
     await test_quality_malformed_halts()
     await test_distribution_confirm_only()
+    await test_distribution_with_media_stages_ig()
     await test_auto_mode_dormant()
     for status, name, detail in results:
         line = f"  [{status}] {name}"

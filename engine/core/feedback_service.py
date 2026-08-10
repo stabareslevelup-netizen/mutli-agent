@@ -9,10 +9,11 @@ guarded procedural proposals for human approval.
     posting by hand) — no live API needed.
   - episodic memory auto-updates with the engagement (safe, no approval).
   - semantic memory auto-updates with the performance signal — which pillar /
-    format / velocity performed (safe, no approval).
-  - when a pattern holds across >= min_jobs jobs (e.g. incident_file+video
-    outperforms company_intel+image), a procedural PROPOSAL is surfaced to the
-    dashboard. NEVER auto-applies — a human approves/rejects via the proposals UI.
+    velocity performed (safe, no approval).
+  - when a pattern holds across >= min_jobs jobs (e.g. incident_file
+    consistently outperforms company_intel), a procedural PROPOSAL is surfaced
+    to the dashboard. NEVER auto-applies — a human approves/rejects via the
+    proposals UI.
 """
 from __future__ import annotations
 
@@ -35,7 +36,6 @@ def engagement_score(engagement: dict[str, dict[str, float]], weights=_WEIGHTS) 
 class FeedbackRecord:
     job_id: str
     pillar: str
-    content_format: str
     velocity: str
     angle: str
     score: float
@@ -44,7 +44,7 @@ class FeedbackRecord:
 class InMemoryFeedbackStore:
     def __init__(self) -> None:
         self.records: list[FeedbackRecord] = []
-        self.proposed_combos: set[tuple] = set()   # dedupe procedural proposals
+        self.proposed_combos: set[str] = set()   # dedupe procedural proposals (by pillar)
 
     def add(self, rec: FeedbackRecord) -> None:
         self.records.append(rec)
@@ -66,63 +66,63 @@ class FeedbackService:
     async def ingest(self, *, job_id: str, engagement: dict[str, dict[str, float]]) -> dict:
         score = engagement_score(engagement)
 
-        # correlate with the job's metadata (pillar / format / velocity / angle)
-        pillar = fmt = velocity = ""
+        # correlate with the job's metadata (pillar / velocity / angle)
+        pillar = velocity = ""
         angle = job_id
         stored = await self._reviews.get(job_id) if self._reviews else None
         if stored is not None:
             it = stored.item
-            pillar, fmt, angle = it.pillar_id, it.content_format.value, it.chosen_angle
+            pillar, angle = it.pillar_id, it.chosen_angle
             velocity = it.attribution.timing_velocity
 
         # episodic auto-update (safe) — what happened for THIS job
         await self._epi.record(
             brand_id=self._brand_id,
-            content=f"job {job_id}: '{angle[:80]}' [{pillar}/{fmt}] engagement_score={score}",
+            content=f"job {job_id}: '{angle[:80]}' [{pillar}] engagement_score={score}",
             meta={"job_id": job_id, "engagement": engagement, "score": score,
-                  "pillar": pillar, "format": fmt, "velocity": velocity},
+                  "pillar": pillar, "velocity": velocity},
             job_id=job_id)
 
         # semantic auto-update (safe) — the generalizable performance signal
         await self._sem.record(
             brand_id=self._brand_id,
-            content=f"performance: pillar={pillar} format={fmt} velocity={velocity} -> score {score}",
-            meta={"pillar": pillar, "format": fmt, "velocity": velocity, "score": score})
+            content=f"performance: pillar={pillar} velocity={velocity} -> score {score}",
+            meta={"pillar": pillar, "velocity": velocity, "score": score})
 
-        self._store.add(FeedbackRecord(job_id, pillar, fmt, velocity, angle, score))
+        self._store.add(FeedbackRecord(job_id, pillar, velocity, angle, score))
         proposal = await self._maybe_propose()
 
-        return {"job_id": job_id, "engagement_score": score, "pillar": pillar, "format": fmt,
+        return {"job_id": job_id, "engagement_score": score, "pillar": pillar,
                 "episodic_updated": True, "semantic_updated": True,
                 "proposal_surfaced": proposal}
 
     async def _maybe_propose(self) -> Optional[dict]:
-        # group by (pillar, format); need enough jobs to trust the pattern
-        groups: dict[tuple, list[float]] = {}
+        # group by pillar; need enough jobs to trust the pattern
+        groups: dict[str, list[float]] = {}
         for r in self._store.records:
-            if r.pillar and r.content_format:
-                groups.setdefault((r.pillar, r.content_format), []).append(r.score)
+            if r.pillar:
+                groups.setdefault(r.pillar, []).append(r.score)
         ranked = sorted(
             [(k, sum(v) / len(v), len(v)) for k, v in groups.items()],
             key=lambda x: x[1], reverse=True)
         if len(ranked) < 2:
             return None
-        (best_combo, best_avg, best_n) = ranked[0]
-        (worst_combo, worst_avg, _wn) = ranked[-1]
-        # only propose on a strong, well-supported gap, and only once per combo
+        (best_pillar, best_avg, best_n) = ranked[0]
+        (worst_pillar, worst_avg, _wn) = ranked[-1]
+        # only propose on a strong, well-supported gap, and only once per pillar
         if best_n < self._min_jobs or worst_avg <= 0 or best_avg < worst_avg * self._ratio:
             return None
-        if best_combo in self._store.proposed_combos:
+        if best_pillar in self._store.proposed_combos:
             return None
-        self._store.proposed_combos.add(best_combo)
+        self._store.proposed_combos.add(best_pillar)
 
         pct = round((best_avg / worst_avg - 1) * 100)
         instruction = (
-            f"Performance signal: {best_combo[0]}+{best_combo[1]} content outperforms "
-            f"{worst_combo[0]}+{worst_combo[1]} by ~{pct}% across {best_n} jobs. "
-            f"Bias Strategy toward {best_combo[0]}+{best_combo[1]} for comparable topics.")
-        perf = {"best": {"combo": list(best_combo), "avg_score": round(best_avg, 2), "jobs": best_n},
-                "worst": {"combo": list(worst_combo), "avg_score": round(worst_avg, 2)}}
+            f"Performance signal: {best_pillar} content outperforms "
+            f"{worst_pillar} by ~{pct}% across {best_n} jobs. "
+            f"Bias Strategy toward {best_pillar} for comparable topics.")
+        perf = {"best": {"pillar": best_pillar, "avg_score": round(best_avg, 2), "jobs": best_n},
+                "worst": {"pillar": worst_pillar, "avg_score": round(worst_avg, 2)}}
         proposal = await self._proc.propose(
             brand_id=self._brand_id, agent="strategy",
             proposed_prompt=instruction, performance_data=perf)

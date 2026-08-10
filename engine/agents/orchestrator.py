@@ -5,11 +5,13 @@ Activates tiers, manages job state, routes, logs. NEVER generates content.
 
   Tier 1 (parallel):  Research || Memory(query) || Timing
   Tier 2:             fusion -> Strategy -> Skeptic (adversarial review, informs)
-  Tier 3 (parallel):  Copy || Prompt Engineer
-
-(11 agents total: the Skeptic is the 11th, added in Tier 2.)
-  Tier 4:             Production (render) -> Quality (gate + route)
+  Tier 3:             Copy (timed)
+  Tier 4:             Quality (gate + route)
   Tier 5:             Distribution (stage; confirm-mode -> nothing publishes)
+
+(9 agents total: Orchestrator, Research, Memory, Timing, Strategy, Skeptic,
+Copy, Quality, Distribution. Text-only brand — no Prompt Engineer / Production
+/ Higgsfield: those were removed when video generation was dropped from scope.)
 
 Validation gates live inside each agent (malformed handoff -> HandoffHalted ->
 job fails, dead-letter already written). Budget is checked up front: when over
@@ -28,9 +30,7 @@ from engine.core.brand_loader import BrandConfig
 from engine.core.cost_guard import CostGuard
 from engine.core.fusion import fuse
 from engine.core.job_manager import JobStore
-from engine.core.models import (
-    AgentAttribution, ContentFormat, PostingMode, QualityRoute, ReviewItem,
-)
+from engine.core.models import AgentAttribution, PostingMode, QualityRoute, ReviewItem
 from engine.core.validation_gate import HandoffHalted
 
 
@@ -42,8 +42,6 @@ class OrchestratorAgents:
     strategy: Any
     skeptic: Any
     copy: Any
-    prompt_engineer: Any
-    production: Any
     quality: Any
     distribution: Any
 
@@ -96,7 +94,7 @@ class Orchestrator:
                 self._a.timing.run(topic=topic, job_id=jid,
                                    pillars=[p.model_dump() for p in brand.pillars],
                                    brand_aliases=[brand.display_name, brand.brand_id,
-                                                  brand.character.name],
+                                                  brand.character_name],
                                    entity=entity),
             )
 
@@ -112,38 +110,20 @@ class Orchestrator:
             packet = packet.model_copy(update={
                 "skeptic_summary": skeptic.skeptic_summary,
                 "confidence_adjustment": skeptic.confidence_adjustment})
-            fmt = packet.content_format
 
-            # --- Tier 3: Copy (timed) + Prompt Engineer (skipped for text_only) -
+            # --- Tier 3: Copy (timed) -----------------------------------------
             await self._jobs.update(jid, current_tier=3)
+            t0 = perf_counter()
+            copy = await self._a.copy.run(packet=packet, brand=brand, job_id=jid)
+            copy_secs = round(perf_counter() - t0, 2)
 
-            async def _timed_copy():
-                t0 = perf_counter()
-                c = await self._a.copy.run(packet=packet, brand=brand, job_id=jid)
-                return c, round(perf_counter() - t0, 2)
-
-            if fmt == ContentFormat.text_only:
-                copy, copy_secs = await _timed_copy()
-                prompt = None
-            else:
-                (copy, copy_secs), prompt = await asyncio.gather(
-                    _timed_copy(),
-                    self._a.prompt_engineer.run(packet=packet, brand=brand, job_id=jid),
-                )
-
-            # --- Tier 4: Production (format-routed) then Quality gate ---------
+            # --- Tier 4: Quality gate -------------------------------------------
             await self._jobs.update(jid, current_tier=4)
-            asset = await self._a.production.run(
-                prompt=prompt, character_element_id=brand.character.higgsfield_element_id,
-                job_id=jid, content_format=fmt)
-            # only VIDEO is always forced to human review; image/text follow the >=0.85 rule
-            has_video = (fmt == ContentFormat.video and asset.status == "ready")
             quality, auto_eligible = await self._a.quality.evaluate(
-                content=copy, brand=brand, job_id=jid, has_video=has_video)
+                content=copy, brand=brand, job_id=jid)
 
             base = dict(research=research, memory=memory, timing=timing, packet=packet,
-                        copy=copy, prompt=prompt, asset=asset, quality=quality,
-                        auto_eligible=auto_eligible)
+                        copy=copy, quality=quality, auto_eligible=auto_eligible)
 
             if quality.route == QualityRoute.reject:
                 await self._jobs.update(jid, status="quality_rejected")
@@ -155,16 +135,15 @@ class Orchestrator:
             # --- Tier 5: Distribution (confirm-mode: stage only) -------------
             await self._jobs.update(jid, current_tier=5)
             content = {"x_thread": copy.x_thread, "ig_caption": copy.ig_caption,
-                       "youtube_script": copy.youtube_script, "asset_url": asset.asset_url,
-                       "media_url": asset.asset_url}
+                       "youtube_script": copy.youtube_script}
             bundle = await self._a.distribution.stage(
                 content=content, posting_mode=brand.posting_mode, job_id=jid)
 
             await self._jobs.update(jid, status="staged_for_review")
 
             # build the screenshot-able review item (content + agent attribution)
-            item = self._build_review_item(jid, fmt, fused, research, memory, timing,
-                                           packet, copy, asset, quality, auto_eligible,
+            item = self._build_review_item(jid, fused, research, memory, timing,
+                                           packet, copy, quality, auto_eligible,
                                            bundle, copy_secs)
             if self._reviews is not None:
                 await self._reviews.add(item=item, bundle=bundle)
@@ -184,8 +163,8 @@ class Orchestrator:
                                       error=f"{type(exc).__name__}: {exc}", context={})
             return result("failed", reason=f"unexpected error: {type(exc).__name__}: {exc}")
 
-    def _build_review_item(self, jid, fmt, fused, research, memory, timing, packet,
-                           copy, asset, quality, auto_eligible, bundle, copy_secs) -> ReviewItem:
+    def _build_review_item(self, jid, fused, research, memory, timing, packet,
+                           copy, quality, auto_eligible, bundle, copy_secs) -> ReviewItem:
         alternatives = [fa.angle for fa in fused if fa.angle != packet.chosen_angle][:3]
         mem_ctx = [m.content for m in (*memory.episodic, *memory.semantic)][:4]
         attribution = AgentAttribution(
@@ -204,10 +183,10 @@ class Orchestrator:
         )
         return ReviewItem(
             job_id=jid, brand_id=self._brand.brand_id, status="staged_for_review",
-            content_format=fmt, pillar_id=packet.pillar_id,
+            pillar_id=packet.pillar_id,
             requires_hedging=packet.requires_hedging, chosen_angle=packet.chosen_angle,
             x_thread=copy.x_thread, ig_caption=copy.ig_caption,
-            youtube_script=copy.youtube_script, asset_url=asset.asset_url,
+            youtube_script=copy.youtube_script,
             quality_overall=quality.overall, quality_route=quality.route.value,
             auto_eligible=auto_eligible, platforms=bundle.plan.platforms,
             attribution=attribution,

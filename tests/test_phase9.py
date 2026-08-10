@@ -1,14 +1,16 @@
 """
-Phase 9 tests — FREE (fakes, no spend). The three fixes + the feedback loop.
+Phase 9 tests — FREE (fakes, no spend). Fix 1 + Fix 2 + the feedback loop.
+
+(Fix 3, the Prompt Engineer's scene-matching rule, was removed along with
+video/image generation — see the "text-only going forward" scope change.)
 
 Fix 1  Copy verification gate: requires_hedging flips from timing; the
        verification directive is injected into the Copy prompt.
 Fix 2  Skeptic agent: structured review; confidence_adjustment clamped <= 0;
        orchestrator enriches the packet before Copy.
-Fix 3  Prompt Engineer: scene matches the article (pillar visual_mood injected)
-       and OCHO placeholder always present.
 Phase 9 feedback loop: ingest -> episodic + semantic auto-update; a 5+ job
-       pattern surfaces a guarded procedural proposal (never auto-applies).
+       pattern (grouped by pillar) surfaces a guarded procedural proposal
+       (never auto-applies).
 """
 from __future__ import annotations
 
@@ -18,9 +20,8 @@ from types import SimpleNamespace
 
 from engine.agents.base import AgentContext
 from engine.agents.copy_agent import CopyAgent
-from engine.agents.prompt_engineer import PromptEngineerAgent
 from engine.agents.skeptic import SkepticAgent
-from engine.agents.strategy import StrategyAgent, choose_content_format, match_pillar
+from engine.agents.strategy import StrategyAgent
 from engine.core.brand_loader import load_brand
 from engine.core.cost_guard import CostGuard, InMemoryCostSink, MODEL_SONNET, model_for
 from engine.core.dead_letter import InMemoryDeadLetterSink
@@ -28,11 +29,10 @@ from engine.core.embeddings import NullEmbeddingProvider
 from engine.core.feedback_service import FeedbackService, InMemoryFeedbackStore, engagement_score
 from engine.core.llm import Usage
 from engine.core.models import (
-    AgentAttribution, CitationPresence, CitationSignal, ContentFormat, DisambiguationGuard,
+    AgentAttribution, CitationPresence, CitationSignal, DisambiguationGuard,
     NarrativeGapSignal, ReviewItem, SkepticReview, StrategyPacket, TimingSignal,
     VelocitySignal, VelocitySource, VelocityVerdict,
 )
-from engine.core.review_store import InMemoryReviewStore
 from engine.core.validation_gate import ValidationGate
 from engine.memory.backend import InMemoryBackend
 from engine.memory.episodic import EpisodicMemory
@@ -116,24 +116,10 @@ async def test_fix2_skeptic():
     check("skeptic_summary populated", rev.skeptic_summary != "")
 
 
-# --- Fix 3: Prompt Engineer scene matches article --------------------------
-async def test_fix3_prompt_engineer():
-    brand = load_brand()
-    # incident_file pillar has an amber/high-stakes visual_mood in the config
-    packet = StrategyPacket(chosen_angle="a humanoid fails on the line", pillar_id="incident_file")
-    llm = CapturingLLM('{"higgsfield_prompt":"a tense scene"}')  # model omits placeholder on purpose
-    out = await PromptEngineerAgent(_ctx(llm)).run(packet=packet, brand=brand, job_id="j")
-    mood = next(p.visual_mood for p in brand.pillars if p.id == "incident_file")
-    check("scene prompt receives the pillar visual mood", mood[:20] in llm.last_user)
-    check("scene prompt receives the article angle", "humanoid fails" in llm.last_user)
-    check("OCHO placeholder always present (injected if model omits)",
-          brand.character.placeholder in out.higgsfield_prompt)
-
-
 # --- Phase 9 feedback loop --------------------------------------------------
-def _review_item(job_id, pillar, fmt, velocity, angle):
+def _review_item(job_id, pillar, velocity, angle):
     return ReviewItem(job_id=job_id, brand_id="madre_de_maquinas", status="approved",
-                      content_format=ContentFormat(fmt), pillar_id=pillar, chosen_angle=angle,
+                      pillar_id=pillar, chosen_angle=angle,
                       attribution=AgentAttribution(timing_velocity=velocity))
 
 
@@ -161,21 +147,21 @@ async def test_feedback_loop():
           engagement_score({"x": {"shares": 1}}) > engagement_score({"x": {"views": 1}}))
 
     # one ingest -> episodic + semantic auto-update
-    rs.put(_review_item("J0", "incident_file", "video", "surging", "an incident"))
+    rs.put(_review_item("J0", "incident_file", "surging", "an incident"))
     r0 = await fb.ingest(job_id="J0", engagement={"x": {"views": 1000, "likes": 50, "shares": 10}})
     check("ingest returns engagement score", r0["engagement_score"] > 0)
     check("episodic auto-updated", r0["episodic_updated"] and len(await epi.query(brand_id=brand.brand_id, text="incident", k=9)) >= 1)
     check("semantic auto-updated", r0["semantic_updated"] and len(await sem.query(brand_id=brand.brand_id, text="performance", k=9)) >= 1)
     check("single ingest does not surface a proposal yet", r0["proposal_surfaced"] is None)
 
-    # 5 strong incident_file+video jobs, 3 weak company_intel+image jobs
+    # 5 strong incident_file jobs, 3 weak company_intel jobs (pattern grouped by pillar alone)
     proposal = None
     for i in range(1, 5):
-        rs.put(_review_item(f"A{i}", "incident_file", "video", "surging", "incident angle"))
+        rs.put(_review_item(f"A{i}", "incident_file", "surging", "incident angle"))
         r = await fb.ingest(job_id=f"A{i}", engagement={"x": {"views": 5000, "likes": 400, "shares": 80, "saves": 60}})
         proposal = proposal or r["proposal_surfaced"]
     for i in range(1, 4):
-        rs.put(_review_item(f"B{i}", "company_intel", "image", "steady", "company angle"))
+        rs.put(_review_item(f"B{i}", "company_intel", "steady", "company angle"))
         r = await fb.ingest(job_id=f"B{i}", engagement={"x": {"views": 400, "likes": 5}})
         proposal = proposal or r["proposal_surfaced"]
 
@@ -193,7 +179,6 @@ async def test_feedback_loop():
 async def main_async() -> int:
     await test_fix1_hedging_flag_and_injection()
     await test_fix2_skeptic()
-    await test_fix3_prompt_engineer()
     await test_feedback_loop()
     for status, name, detail in results:
         line = f"  [{status}] {name}"

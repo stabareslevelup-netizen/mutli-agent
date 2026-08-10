@@ -15,30 +15,12 @@ from typing import Optional
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
-from engine.core.models import ContentFormat, PostingMode
+from engine.core.models import PostingMode
 
 
 class Pillar(BaseModel):
     id: str
     desc: str = ""
-    format: Optional[ContentFormat] = None   # preferred content format for this pillar
-    visual_mood: str = ""                    # Prompt Engineer scene mood (Fix 3, config-driven)
-
-
-class Character(BaseModel):
-    name: str
-    higgsfield_element_id: str
-    placeholder: str
-    palette: list[str] = Field(default_factory=list)
-    typography: list[str] = Field(default_factory=list)
-    style: str = ""
-    visual_encoding: str = ""
-
-    @model_validator(mode="after")
-    def _placeholder_wraps_element_id(self) -> "Character":
-        if self.higgsfield_element_id not in self.placeholder:
-            raise ValueError("character.placeholder must contain higgsfield_element_id")
-        return self
 
 
 class Budget(BaseModel):
@@ -50,7 +32,7 @@ class BrandConfig(BaseModel):
     display_name: str
     voice: str
     pillars: list[Pillar] = Field(..., min_length=1)
-    character: Character
+    character_name: str = ""   # optional persona name (used as a citation alias)
     formats: list[str] = Field(..., min_length=1)
     fusion_weights: dict[str, float]
     budget: Budget = Field(default_factory=Budget)

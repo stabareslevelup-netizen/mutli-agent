@@ -70,7 +70,7 @@ async def main():
     timing = await TimingAgent(ctx).run(
         topic=topic, job_id=job_id,
         pillars=[p.model_dump() for p in brand.pillars],
-        brand_aliases=[brand.display_name, brand.brand_id, brand.character.name],
+        brand_aliases=[brand.display_name, brand.brand_id, brand.character_name],
         entity=entity)
     print(f"\nTIMING:\n  velocity: {timing.velocity.verdict.value} "
           f"(conf {timing.velocity.confidence}, src {timing.velocity.source.value}, "

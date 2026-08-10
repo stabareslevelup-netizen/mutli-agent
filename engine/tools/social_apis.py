@@ -119,16 +119,22 @@ class InstagramAdapter:
 
 class YouTubeAdapter:
     """YouTube Data API v3. OAuth + resumable upload; quota-limited. Not live
-    until OAuth is configured."""
+    until OAuth is configured. YouTube cannot publish without a video file —
+    a text-only brand naturally has no asset, so this adapter stages nothing
+    and is excluded from the bundle (same pattern as Instagram's media
+    requirement)."""
     name = "youtube"
     live = False
     requires_setup = "requires OAuth + YouTube Data API v3 setup (quota-limited)"
 
     def stage(self, content: dict) -> StagedPost:
+        video_url = content.get("asset_url")
+        if not video_url:
+            raise PublishBlocked("YouTube requires a video file to upload")
         return StagedPost(platform=self.name,
                           payload={"title": content.get("title", "")[:100],
                                    "description": content.get("youtube_script", ""),
-                                   "video_url": content.get("asset_url"),
+                                   "video_url": video_url,
                                    "privacyStatus": "private"},
                           notes="OAuth + Data API v3 resumable upload; quota-limited")
 

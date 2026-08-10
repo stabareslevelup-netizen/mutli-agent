@@ -1,5 +1,6 @@
 """
-Phase 6 orchestrator tests — FREE (smart fake LLM + mock production, no spend).
+Phase 6 orchestrator tests — FREE (smart fake LLM, no spend). Text-only
+pipeline: no Production/Prompt Engineer tiers.
 
 Covers tier activation, job-state progression, per-job cost, and halt paths:
   - happy path -> staged_for_review (confirm-mode, nothing published)
@@ -18,8 +19,6 @@ from engine.agents.copy_agent import CopyAgent
 from engine.agents.distribution import DistributionAgent
 from engine.agents.memory import MemoryAgent
 from engine.agents.orchestrator import Orchestrator, OrchestratorAgents
-from engine.agents.production import ProductionAgent
-from engine.agents.prompt_engineer import PromptEngineerAgent
 from engine.agents.quality import QualityAgent
 from engine.agents.research import ResearchAgent
 from engine.agents.skeptic import SkepticAgent
@@ -37,8 +36,7 @@ from engine.memory.backend import InMemoryBackend
 from engine.memory.episodic import EpisodicMemory
 from engine.memory.narrative import NarrativeMemory
 from engine.memory.semantic import SemanticMemory
-from engine.tools.higgsfield_mcp import MockProductionBackend
-from engine.tools.social_apis import InstagramAdapter, XAdapter, YouTubeAdapter
+from engine.tools.social_apis import XAdapter
 
 os.environ["BRAND_CONFIG_PATH"] = "brands/madre_de_maquinas.yaml"
 PASS, FAIL = "PASS", "FAIL"
@@ -56,7 +54,6 @@ _RESEARCH = ('{"angles":['
 _SEARCH = '{"results":[{"title":"ramps production milestone","snippet":"unprecedented 24x scale-up first","published":"2026-05","url":"http://x"},{"title":"factory launch","snippet":"record","published":"2026","url":"http://y"}]}'
 _CITE = '{"answer_text":"The Robot Report and CNBC are the cited authorities.","cited_sources":["The Robot Report","CNBC"],"collision_terms":[]}'
 _COPY = '{"x_thread":["robots are here","part two"],"ig_caption":"caption","youtube_script":"script body"}'
-_PROMPT = '{"higgsfield_prompt":"a cinematic scene of the character"}'
 _QUALITY_HI = '{"voice":0.9,"narrative":0.9,"format":0.9,"hook":0.9,"coherence":0.9,"reasons":["on voice"]}'
 _QUALITY_LO = '{"voice":0.2,"narrative":0.2,"format":0.2,"hook":0.2,"coherence":0.2,"reasons":["off voice"]}'
 _SKEPTIC = ('{"disputes":"d","hidden_assumptions":"h","alternative_explanations":"a",'
@@ -84,8 +81,6 @@ class SmartFakeLLM:
             key, text = "skeptic", _SKEPTIC
         elif "copywriter" in s:
             key, text = "copy", _COPY
-        elif "prompt engineer" in s:
-            key, text = "prompt", _PROMPT
         elif "quality reviewer" in s:
             key, text = "quality", self._quality
         else:
@@ -96,7 +91,7 @@ class SmartFakeLLM:
         return text, Usage(input_tokens=300, output_tokens=100)
 
 
-def _build(llm, *, daily_budget=25.0, strategy_checker=None, narrative=None, prod_status="ready"):
+def _build(llm, *, daily_budget=25.0, strategy_checker=None):
     brand = load_brand()
     cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
     cg = CostGuard(daily_budget_usd=daily_budget, cost_sink=cost)
@@ -107,10 +102,8 @@ def _build(llm, *, daily_budget=25.0, strategy_checker=None, narrative=None, pro
     agents = OrchestratorAgents(
         research=ResearchAgent(ctx), memory=MemoryAgent(epi, sem, nar), timing=TimingAgent(ctx),
         strategy=StrategyAgent(gate, checker=strategy_checker), skeptic=SkepticAgent(ctx),
-        copy=CopyAgent(ctx), prompt_engineer=PromptEngineerAgent(ctx),
-        production=ProductionAgent(MockProductionBackend(status=prod_status), cg, gate, brand.brand_id),
-        quality=QualityAgent(ctx),
-        distribution=DistributionAgent([XAdapter(), InstagramAdapter(), YouTubeAdapter()], cg, gate, brand.brand_id, dead_letter_sink=dl))
+        copy=CopyAgent(ctx), quality=QualityAgent(ctx),
+        distribution=DistributionAgent([XAdapter()], cg, gate, brand.brand_id, dead_letter_sink=dl))
     orch = Orchestrator(agents=agents, job_store=InMemoryJobStore(), cost_guard=cg, brand=brand)
     return orch, cost, dl, nar
 
@@ -126,7 +119,7 @@ async def test_happy_path():
     bundle = res.artifacts.get("bundle")
     check("distribution staged confirm-mode, nothing published",
           bundle and bundle.plan.posting_mode == PostingMode.confirm and not bundle.plan.published)
-    check("video -> not auto eligible (human review)", res.artifacts["auto_eligible"] is False)
+    check("skeptic summary reaches the review item", res.artifacts["packet"].skeptic_summary != "")
 
 
 async def test_malformed_handoff_fails():

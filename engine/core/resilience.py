@@ -1,6 +1,6 @@
 """
 engine/core/resilience.py — retry + circuit breaker for ALL external calls
-(Higgsfield, social APIs, web_search, and the future GDELT/Wikipedia sources).
+(social APIs, web_search, and the future GDELT/Wikipedia sources).
 
 - retry_async: exponential backoff with optional jitter.
 - CircuitBreaker: after N consecutive failures the circuit OPENS and calls

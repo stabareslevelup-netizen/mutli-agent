@@ -2,11 +2,8 @@
 engine/agents/quality.py — Quality agent [PROVEN].
 
 Scores voice / narrative / format / hook / coherence in [0,1], routes per
-rules, and reports auto-publish eligibility:
-
-  - VIDEO is ALWAYS routed to human review (never auto-eligible), regardless of
-    score.
-  - TEXT is auto-eligible ONLY at overall >= 0.85.
+rules, and reports auto-publish eligibility: auto-eligible ONLY at overall
+>= 0.85 and route == publish_queue.
 
 (In v1 posting_mode=confirm everything waits for a human anyway; auto_eligible
 is what gates the dormant auto/scheduled modes.)
@@ -41,8 +38,8 @@ Return ONLY: {{"voice":0..1,"narrative":0..1,"format":0..1,"hook":0..1,"coherenc
 class QualityAgent(BaseAgent):
     name = "quality"
 
-    async def evaluate(self, *, content: CopyOutput, brand: BrandConfig, job_id: str,
-                       has_video: bool) -> tuple[QualityScore, bool]:
+    async def evaluate(self, *, content: CopyOutput, brand: BrandConfig,
+                       job_id: str) -> tuple[QualityScore, bool]:
         constraints = "(provided to strategy; assume staked positions hold)"
         schema = {"type": "object",
                   "properties": {k: {"type": "number"} for k in
@@ -69,7 +66,5 @@ class QualityAgent(BaseAgent):
                    "reasons": raw.get("reasons", [])}
 
         score = await self._validate(QualityScore, raw, job_id=job_id, step="quality->distribution")
-        # RULE: video always to human review; text auto only at >= AUTO_PUBLISH_MIN
-        auto_eligible = (not has_video) and score.overall >= AUTO_PUBLISH_MIN \
-            and score.route == QualityRoute.publish_queue
+        auto_eligible = score.overall >= AUTO_PUBLISH_MIN and score.route == QualityRoute.publish_queue
         return score, auto_eligible

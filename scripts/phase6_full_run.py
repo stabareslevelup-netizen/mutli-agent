@@ -1,8 +1,8 @@
 """
-ONE real end-to-end orchestrated job. Real Tier-1 (Research/Memory/Timing) +
-Strategy + Tier-3 (Copy/Prompt) + Quality; render is MOCKED (avoids the ~$3.21
-real render). Proves tier activation, parallel fan-out, job state, confirm-mode
-staging, and per-job cost.
+ONE real end-to-end orchestrated job (text-only pipeline). Real Tier-1
+(Research/Memory/Timing) + Strategy + Skeptic + Copy + Quality; no render step
+(video/image generation was dropped from scope). Proves tier activation, job
+state, confirm-mode staging, and per-job cost.
 
     python -m scripts.phase6_full_run "topic" [entity]
 """
@@ -16,28 +16,26 @@ from dotenv import load_dotenv
 load_dotenv("/home/user/mutli-agent/.env")
 
 from engine.agents.base import AgentContext               # noqa: E402
-from engine.agents.copy_agent import CopyAgent            # noqa: E402
-from engine.agents.distribution import DistributionAgent  # noqa: E402
-from engine.agents.memory import MemoryAgent              # noqa: E402
+from engine.agents.copy_agent import CopyAgent             # noqa: E402
+from engine.agents.distribution import DistributionAgent   # noqa: E402
+from engine.agents.memory import MemoryAgent               # noqa: E402
 from engine.agents.orchestrator import Orchestrator, OrchestratorAgents  # noqa: E402
-from engine.agents.production import ProductionAgent      # noqa: E402
-from engine.agents.prompt_engineer import PromptEngineerAgent  # noqa: E402
-from engine.agents.quality import QualityAgent            # noqa: E402
-from engine.agents.research import ResearchAgent          # noqa: E402
-from engine.agents.strategy import StrategyAgent          # noqa: E402
-from engine.agents.timing import TimingAgent              # noqa: E402
-from engine.core.brand_loader import load_brand           # noqa: E402
+from engine.agents.quality import QualityAgent             # noqa: E402
+from engine.agents.research import ResearchAgent           # noqa: E402
+from engine.agents.skeptic import SkepticAgent             # noqa: E402
+from engine.agents.strategy import StrategyAgent           # noqa: E402
+from engine.agents.timing import TimingAgent               # noqa: E402
+from engine.core.brand_loader import load_brand            # noqa: E402
 from engine.core.cost_guard import CostGuard, InMemoryCostSink  # noqa: E402
 from engine.core.dead_letter import InMemoryDeadLetterSink  # noqa: E402
 from engine.core.embeddings import build_embedding_provider, NullEmbeddingProvider  # noqa: E402
-from engine.core.job_manager import InMemoryJobStore      # noqa: E402
-from engine.core.llm import LLMClient                     # noqa: E402
-from engine.core.validation_gate import ValidationGate    # noqa: E402
-from engine.memory.backend import InMemoryBackend         # noqa: E402
-from engine.memory.episodic import EpisodicMemory         # noqa: E402
-from engine.memory.narrative import NarrativeMemory       # noqa: E402
-from engine.memory.semantic import SemanticMemory         # noqa: E402
-from engine.tools.higgsfield_mcp import MockProductionBackend  # noqa: E402
+from engine.core.job_manager import InMemoryJobStore        # noqa: E402
+from engine.core.llm import LLMClient                       # noqa: E402
+from engine.core.validation_gate import ValidationGate      # noqa: E402
+from engine.memory.backend import InMemoryBackend           # noqa: E402
+from engine.memory.episodic import EpisodicMemory           # noqa: E402
+from engine.memory.narrative import NarrativeMemory         # noqa: E402
+from engine.memory.semantic import SemanticMemory           # noqa: E402
 from engine.tools.social_apis import InstagramAdapter, XAdapter, YouTubeAdapter  # noqa: E402
 
 
@@ -58,12 +56,12 @@ async def main():
 
     agents = OrchestratorAgents(
         research=ResearchAgent(ctx), memory=MemoryAgent(epi, sem, nar), timing=TimingAgent(ctx),
-        strategy=StrategyAgent(gate), copy=CopyAgent(ctx), prompt_engineer=PromptEngineerAgent(ctx),
-        production=ProductionAgent(MockProductionBackend(), cg, gate, brand.brand_id),
+        strategy=StrategyAgent(gate), skeptic=SkepticAgent(ctx), copy=CopyAgent(ctx),
         quality=QualityAgent(ctx),
         distribution=DistributionAgent([XAdapter(link_mode="reply"), InstagramAdapter(), YouTubeAdapter()],
                                        cg, gate, brand.brand_id, dead_letter_sink=dl))
-    orch = Orchestrator(agents=agents, job_store=InMemoryJobStore(), cost_guard=cg, brand=brand)
+    orch = Orchestrator(agents=agents, job_store=InMemoryJobStore(), cost_guard=cg, brand=brand,
+                        dead_letter_sink=dl)
 
     print(f"\nTOPIC: {topic}  (entity={entity})\n")
     res = await orch.run(topic=topic, entity=entity, trigger="manual")
@@ -74,12 +72,12 @@ async def main():
     if res.status == "staged_for_review":
         a = res.artifacts
         print(f"  chosen_angle: {a['packet'].chosen_angle[:90]}")
+        print(f"  skeptic: {a['packet'].skeptic_summary[:120]}")
         print(f"  timing: velocity={a['timing'].velocity.verdict.value} "
               f"citation={a['timing'].citation.presence.value} "
               f"open_gaps={sum(1 for g in a['timing'].gaps.gaps if g.is_open)}")
         print(f"  copy: {len(a['copy'].x_thread)} tweets | quality={a['quality'].overall} "
               f"route={a['quality'].route.value} auto_eligible={a['auto_eligible']}")
-        print(f"  render(mock): {a['asset'].status} {a['asset'].asset_url}")
         print(f"  staged platforms: {a['bundle'].plan.platforms} published={a['bundle'].plan.published}")
     else:
         print(f"  reason: {res.reason}")

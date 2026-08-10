@@ -2,10 +2,10 @@
 engine/core/cost_guard.py — model tiering, per-job cost logging, daily cap.
 
 Model tiering (SPEC): reasoning agents (Research, Strategy, Quality, Memory,
-Timing) run on Opus 4.8; structured/formatting agents (Copy, Prompt Engineer,
-Production control, Distribution) run on Sonnet 4.6. Every job logs token cost
-to cost_log; once the brand's daily budget is exceeded, non-critical
-generation halts while critical work may proceed.
+Timing) run on Opus 4.8; structured/formatting agents (Copy, Skeptic,
+Distribution) run on Sonnet 4.6. Every job logs token cost to cost_log; once
+the brand's daily budget is exceeded, non-critical generation halts while
+critical work may proceed.
 
 Pricing is authoritative as of 2026-06 (USD per 1M tokens) and overridable.
 The cost sink is injectable so this is testable without a live DB.
@@ -22,7 +22,7 @@ MODEL_SONNET = "claude-sonnet-4-6"
 MODEL_HAIKU = "claude-haiku-4-5"
 
 REASONING_AGENTS = {"research", "strategy", "quality", "memory", "timing"}
-STRUCTURED_AGENTS = {"copy", "prompt_engineer", "production", "distribution"}
+STRUCTURED_AGENTS = {"copy", "skeptic", "distribution"}
 
 
 def model_for(agent: str) -> str:
@@ -133,8 +133,8 @@ class CostGuard:
 
     async def record_external(self, *, job_id: Optional[str], brand_id: str, agent: str,
                               usd: float, label: str) -> CostEntry:
-        """Log a non-token external cost (Higgsfield render, per-post X fee).
-        `label` stands in for the model column (e.g. 'higgsfield', 'x-api')."""
+        """Log a non-token external cost (e.g. a per-post X fee).
+        `label` stands in for the model column (e.g. 'x-api')."""
         self._roll()
         self._spent += usd
         if self.cost_sink is not None:

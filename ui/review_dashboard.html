@@ -31,18 +31,11 @@
   .qitem.active{border-color:var(--pink);box-shadow:0 0 0 1px var(--pink) inset}
   .qitem .angle{color:#fff;font-size:12px;margin-bottom:6px}
   .tag{display:inline-block;font-size:10px;padding:2px 7px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
-  .tag.video{color:var(--pink);border-color:var(--pink)}
-  .tag.image{color:var(--amber);border-color:var(--amber)}
-  .tag.text_only{color:var(--matte)}
   /* panels */
   .panels{display:grid;grid-template-columns:1fr 1fr;gap:0}
   .panel{padding:22px 26px;overflow:auto}
   .panel.content{border-right:1px solid var(--line)}
   .panel h2{font-size:22px;color:#fff;margin:0 0 14px}
-  .media{background:#000;border:1px solid var(--line);border-radius:10px;aspect-ratio:3/4;max-height:420px;
-    width:100%;display:flex;align-items:center;justify-content:center;overflow:hidden;margin-bottom:16px}
-  .media video,.media img{width:100%;height:100%;object-fit:contain}
-  .media .text-stand{padding:24px;color:var(--matte);font-size:14px}
   .label{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.12em;margin:14px 0 6px}
   .copy-box{background:var(--charcoal-2);border:1px solid var(--line);border-radius:8px;padding:12px;white-space:pre-wrap}
   .tweet{padding:8px 0;border-bottom:1px dashed var(--line)}
@@ -126,15 +119,8 @@ async function loadQueue(){
   q.innerHTML = items.map(i=>`
     <div class="qitem ${i.job_id===current?'active':''}" onclick="loadJob('${i.job_id}')">
       <div class="angle">${esc(i.chosen_angle).slice(0,90)}</div>
-      <span class="tag ${i.content_format}">${i.content_format}</span>
       <span class="tag">Q ${(i.quality_overall).toFixed(2)}</span>
     </div>`).join("");
-}
-
-function media(i){
-  if(i.content_format==="video" && i.asset_url) return `<div class="media"><video src="${i.asset_url}" controls></video></div>`;
-  if(i.content_format==="image" && i.asset_url) return `<div class="media"><img src="${i.asset_url}"/></div>`;
-  return `<div class="media"><div class="text-stand">text-only — copy stands alone, no visual</div></div>`;
 }
 
 async function loadJob(id){
@@ -143,8 +129,7 @@ async function loadJob(id){
   const a = i.attribution;
   // content panel
   $("#content").innerHTML = `
-    <h2>CONTENT <span class="tag ${i.content_format}">${i.content_format}</span></h2>
-    ${media(i)}
+    <h2>CONTENT <span class="tag">text-only</span></h2>
     <div class="label">X thread</div>
     <div class="copy-box">${(i.x_thread||[]).map(t=>`<div class="tweet">${esc(t)}</div>`).join("")}</div>
     <div class="label">IG caption</div><div class="copy-box">${esc(i.ig_caption)}</div>
@@ -161,7 +146,7 @@ async function loadJob(id){
     </div>`;
   // attribution panel (screenshot-able)
   $("#attr").innerHTML = `
-    <h2>THE 11 AGENTS BUILT THIS</h2>
+    <h2>THE 9 AGENTS BUILT THIS</h2>
     <div class="agentcard"><div class="who">RESEARCH <small>chosen angle + alternatives</small></div>
       <div class="body">${esc(a.research_chosen)}
       ${(a.research_alternatives||[]).map(x=>`<div class="alt">${esc(x)}</div>`).join("")}</div></div>

@@ -7,28 +7,13 @@ voice: "dark editorial, authoritative, cinematic, Chicana-led physical AI perspe
 pillars:
   - id: ai_gets_a_body
     desc: "Physical AI entering the world — robots, embodied systems, deployment stories"
-    format: video
-    visual_mood: "OCHO in motion, forward momentum, open space, the threshold of emergence"
   - id: company_intel
     desc: "What companies in physical AI are actually building and deciding"
-    format: image          # company intel can move fast — image or text_only
-    visual_mood: "OCHO observing, analytical stillness, cool data-environment aesthetic, restraint"
   - id: deployment_reality
     desc: "What really happens when physical AI meets real environments"
-    format: video          # story/depth -> video
-    visual_mood: "OCHO in industrial geometry, assembly-line light, scale implied, the real floor"
   - id: incident_file
     desc: "When physical AI fails, what we learn, what it means"
-    format: video          # narrative -> video
-    visual_mood: "OCHO in a damaged or high-stakes environment, amber warning light, tension in the composition"
-character:
-  name: OCHO
-  higgsfield_element_id: "29906817-e1ec-4683-919c-71a3c7fea905"
-  placeholder: "<<<29906817-e1ec-4683-919c-71a3c7fea905>>>"
-  palette: [charcoal, pink, matte]
-  typography: [Bebas Neue, Space Mono]
-  style: "dark editorial, cinematic, physical AI embodied in environment"
-  visual_encoding: "visor (vision), ganglia nodes (proprioception), amber thermal strips, glowing chest core"
+character_name: OCHO      # persona name; used as a citation-monitoring alias
 formats:                 # output formats the Copy agent must produce
   - x_thread
   - ig_caption

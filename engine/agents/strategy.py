@@ -19,18 +19,15 @@ from typing import Optional, Protocol, runtime_checkable
 from engine.core.brand_loader import BrandConfig
 from engine.core.fusion import FusedAngle
 from engine.core.models import (
-    CitationPresence, ContentFormat, NarrativeConstraint, StrategyPacket, TimingSignal,
-    VelocityVerdict,
+    CitationPresence, NarrativeConstraint, StrategyPacket, TimingSignal,
 )
 from engine.core.validation_gate import ValidationGate
 
-# cues that mark a deep / narrative angle (favors video)
-_DEEP_CUES = {"why", "inside", "story", "reality", "fails", "failure", "incident",
-              "learn", "lesson", "investigation", "aftermath", "postmortem", "deep"}
-
 
 def match_pillar(angle_text: str, pillars):
-    """Best lexical match of an angle to a brand pillar (or None)."""
+    """Best lexical match of an angle to a brand pillar (or None). Used to tag
+    the packet's pillar_id, which drives the Fix-1 hedging note and the
+    feedback loop's performance-pattern grouping."""
     at = _tokens(angle_text)
     matched, best = None, 0.0
     for p in pillars:
@@ -38,20 +35,6 @@ def match_pillar(angle_text: str, pillars):
         if score > best:
             best, matched = score, p
     return matched
-
-
-def choose_content_format(velocity: VelocityVerdict, angle_text: str, pillars) -> ContentFormat:
-    """Format routing: pillar hint (config) is the baseline; a deep/narrative
-    angle favors video; high velocity (breaking) favors speed (image/text_only)
-    EXCEPT when the pillar leans video (depth wins). Default video."""
-    at = _tokens(angle_text)
-    matched = match_pillar(angle_text, pillars)
-    base = (matched.format if (matched and matched.format) else ContentFormat.video)
-    is_deep = bool(at & _DEEP_CUES) or base == ContentFormat.video
-    breaking = velocity == VelocityVerdict.surging
-    if breaking and not is_deep:                       # speed wins for non-deep breaking angles
-        return ContentFormat.text_only if base == ContentFormat.text_only else ContentFormat.image
-    return base                                         # low urgency or deep -> pillar baseline
 
 
 class StrategyBlocked(Exception):
@@ -105,7 +88,6 @@ class StrategyAgent:
     async def decide(self, *, fused: list[FusedAngle], constraints: list[NarrativeConstraint],
                      brand: BrandConfig, job_id: str,
                      timing: Optional[TimingSignal] = None) -> StrategyPacket:
-        verdict = timing.velocity.verdict if timing else VelocityVerdict.unknown
         citation = timing.citation.presence.value if timing else ""
         vel_conf = timing.velocity.confidence if timing else 0.0
         # Fix 1: hedge when citation is ambiguous OR velocity confidence is low
@@ -115,15 +97,13 @@ class StrategyAgent:
             violating = [c for c in constraints if self._checker.violates(fa.angle, c)]
             if violating:
                 continue
-            fmt = choose_content_format(verdict, fa.angle, brand.pillars)
             mp = match_pillar(fa.angle, brand.pillars)
             packet = StrategyPacket(
                 chosen_angle=fa.angle,
                 rationale=(f"top fused score {fa.score} "
                            f"(research={fa.research:.2f}, memory={fa.memory:.2f}, "
-                           f"timing={fa.timing:.2f}); format={fmt.value}; "
+                           f"timing={fa.timing:.2f}); "
                            f"hedging={'on' if requires_hedging else 'off'}; no staked-position conflict"),
-                content_format=fmt,
                 pillar_id=(mp.id if mp else ""),
                 citation_status=citation,
                 velocity_confidence=vel_conf,
@@ -134,6 +114,6 @@ class StrategyAgent:
                 inputs_digest=fa.digest,
             )
             return await self._gate.validate(StrategyPacket, packet.model_dump(),
-                                             job_id=job_id, step="strategy->production")
+                                             job_id=job_id, step="strategy->skeptic")
         raise StrategyBlocked(
             "all candidate angles contradict an active staked narrative position")

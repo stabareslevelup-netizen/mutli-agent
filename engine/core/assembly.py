@@ -2,9 +2,9 @@
 engine/core/assembly.py — wire a ready-to-run Orchestrator from a brand config.
 
 Centralizes the agent wiring the phase scripts duplicated. Everything is
-injectable: pass a real Higgsfield backend / Sql stores in production, or take
-the defaults (mock render, in-memory stores) for dev and tests. The LLM client
-defaults to the real Anthropic client but can be swapped for a fake.
+injectable: pass Sql stores in production, or take the defaults (in-memory
+stores) for dev and tests. The LLM client defaults to the real Anthropic
+client but can be swapped for a fake. Text-only pipeline — no render backend.
 """
 from __future__ import annotations
 
@@ -16,8 +16,6 @@ from engine.agents.copy_agent import CopyAgent
 from engine.agents.distribution import DistributionAgent
 from engine.agents.memory import MemoryAgent
 from engine.agents.orchestrator import Orchestrator, OrchestratorAgents
-from engine.agents.production import ProductionAgent
-from engine.agents.prompt_engineer import PromptEngineerAgent
 from engine.agents.quality import QualityAgent
 from engine.agents.research import ResearchAgent
 from engine.agents.skeptic import SkepticAgent
@@ -36,7 +34,6 @@ from engine.memory.narrative import NarrativeMemory
 from engine.memory.procedural import ProceduralMemory
 from engine.memory.semantic import SemanticMemory
 from engine.core.review_store import InMemoryReviewStore
-from engine.tools.higgsfield_mcp import MockProductionBackend, ProductionBackend
 from engine.tools.social_apis import InstagramAdapter, XAdapter, YouTubeAdapter
 
 
@@ -53,7 +50,6 @@ class AssembledEngine:
 
 
 def build_orchestrator(brand: BrandConfig, *, llm: Optional[Any] = None,
-                       production_backend: Optional[ProductionBackend] = None,
                        memory_backend: Optional[MemoryBackend] = None,
                        job_store: Optional[JobStore] = None,
                        cost_sink: Optional[Any] = None,
@@ -73,8 +69,6 @@ def build_orchestrator(brand: BrandConfig, *, llm: Optional[Any] = None,
     proc = ProceduralMemory(be, reference_set=[brand.voice], voice_threshold=0.2)
     review_store = InMemoryReviewStore()
 
-    prod = production_backend or MockProductionBackend()  # real render needs MCP/egress
-
     dist = DistributionAgent(
         [XAdapter(link_mode="reply"), InstagramAdapter(), YouTubeAdapter()],
         cg, gate, brand.brand_id, dead_letter_sink=dl)
@@ -86,8 +80,6 @@ def build_orchestrator(brand: BrandConfig, *, llm: Optional[Any] = None,
         strategy=StrategyAgent(gate),
         skeptic=SkepticAgent(ctx),
         copy=CopyAgent(ctx),
-        prompt_engineer=PromptEngineerAgent(ctx),
-        production=ProductionAgent(prod, cg, gate, brand.brand_id),
         quality=QualityAgent(ctx),
         distribution=dist,
     )
