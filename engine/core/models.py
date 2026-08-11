@@ -205,10 +205,14 @@ class PrimarySourceSignal(BaseModel):
 
 class TimingSignal(BaseModel):
     """Superseded by TimingDecision (Phase 2) as Timing's public return type.
-    Kept only because the underlying velocity/gap/citation tool modules
-    (velocity_probe.py, narrative_gap.py, citation_monitor.py) still compute
-    these signals internally — Timing.assign() uses them to derive
-    citation_hedge_required per item, it just no longer returns this wrapper."""
+    Timing uses PostHistoryStore for duplicate_check and narrative_gap_check.
+    Velocity, urgency, and citation_hedge_required fold into the batch LLM
+    call in timing.py. velocity_probe.py, citation_monitor.py, AND
+    narrative_gap.py are all orphaned by this migration (verified: Strategy's
+    conflict check uses the separate checker/NarrativeConstraint mechanism,
+    not find_gaps() — narrative_gap.py has no live caller left). Kept here
+    (unused) rather than deleted, per the orphan-don't-delete-until-Phase-5
+    convention applied to all three tool modules."""
     velocity: VelocitySignal
     gaps: NarrativeGapSignal
     citation: CitationSignal

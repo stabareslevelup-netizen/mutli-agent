@@ -1,6 +1,11 @@
 """
 engine/tools/velocity_probe.py — cultural-velocity signal for the Timing agent.
 
+# ORPHANED - Phase 2 migration. Candidate for cleanup. Do not delete until
+# after Phase 5 is complete. The new TimingDecision schema has no
+# velocity-verdict field; velocity/urgency judgment now folds into
+# timing.py's single batch LLM call instead of this structured probe.
+
 Design resolves the Phase 0 infra asks:
 
   * PRIMARY data layer = the Anthropic server-side `web_search` tool, injected

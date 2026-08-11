@@ -1,6 +1,14 @@
 """
 engine/tools/citation_monitor.py — is the brand surfaced/cited by answer engines?
 
+# ORPHANED - Phase 2 migration. Candidate for cleanup. Do not delete until
+# after Phase 5 is complete. This answers a different question than the new
+# TimingDecision.citation_hedge_required field needs: this module checks
+# brand-visibility (are WE cited), while citation_hedge_required asks
+# whether a specific claim needs hedging (verification confidence) --
+# unrelated despite the similar name. That judgment now lives in timing.py's
+# batch LLM call instead.
+
 RULE 3 (Phase 0): disambiguation-aware. The Phase-0 false positive came from a
 naive substring match of the brand name inside an unrelated same-name context
 (a Magic: The Gathering card). Production fix:
