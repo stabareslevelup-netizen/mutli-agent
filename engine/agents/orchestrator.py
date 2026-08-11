@@ -40,6 +40,7 @@ from typing import Any, Optional
 
 from engine.core.brand_loader import BrandConfig
 from engine.core.cost_guard import CostGuard
+from engine.core.embeddings import safe_embed
 from engine.core.job_manager import JobStore
 from engine.core.models import (
     PostingSlot,
@@ -77,13 +78,17 @@ class Orchestrator:
 
     def __init__(self, *, agents: OrchestratorAgents, job_store: JobStore,
                  cost_guard: CostGuard, brand: BrandConfig, dead_letter_sink=None,
-                 narrative_conflict_sink=None, review_store=None, notifier=None):
+                 narrative_conflict_sink=None, post_history_store=None,
+                 embeddings=None, review_store=None, notifier=None):
         self._a = agents
         self._jobs = job_store
         self._cost = cost_guard
         self._brand = brand
         self._dl = dead_letter_sink
         self._nc = narrative_conflict_sink   # separate from dead_letter — see module docstring
+        self._post_history = post_history_store   # duplicate_check / narrative_gap_check for Timing
+        self._embeddings = embeddings             # computes post_angle_embedding at stage time;
+                                                   # None -> safe_embed degrades gracefully (see below)
         self._reviews = review_store
         self._notifier = notifier            # optional "something's waiting" push alert
 
@@ -206,6 +211,19 @@ class Orchestrator:
             await self._jobs.update(jid, current_tier=5)
             staged = await self._build_staged_post(item, timing, copy_out, quality_out)
             bundle = await self._a.distribution.stage_v2(staged=staged, job_id=jid)
+
+            # Recorded at STAGE time, not publish time — so this source_url
+            # can't re-enter tomorrow's sweep while today's staged item is
+            # still sitting unreviewed in the queue (see post_history_store.py).
+            if self._post_history is not None:
+                from datetime import datetime, timezone
+                embedding = None
+                if self._embeddings is not None:
+                    embedding = (await safe_embed(self._embeddings, [item.post_angle]))[0]
+                await self._post_history.record(
+                    source_url=str(item.source_url), item_id=item.item_id,
+                    posted_at=datetime.now(timezone.utc), slot=timing.recommended_slot.value,
+                    post_angle_embedding=embedding)
 
             await self._jobs.update(jid, status="staged_for_review")
             review_item = self._build_review_item(
