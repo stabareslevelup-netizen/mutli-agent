@@ -23,9 +23,12 @@ single-topic lookup, so the pipeline has two levels:
 
 Two safety mechanisms are preserved as hard invariants (not dropped in the
 migration): TimingDecision.citation_hedge_required (Copy must hedge claims)
-and StrategyOutput.narrative_conflict_flag (hard-halts immediately, logged
-to a SEPARATE review queue from dead_letter — a conflict means the source
-is real, not that the pipeline failed; it's a human decision, not a defect).
+and StrategyOutput.narrative_conflict_flag (hard-halts the job immediately;
+the sink write to a SEPARATE review queue from dead_letter happens in
+strategy.py itself, next to the check that triggers it — the Orchestrator
+only halts the JOB here, since only it has JobStore access. A conflict
+means the source is real, not that the pipeline failed; it's a human
+decision, not a defect).
 
 Validation gates live inside each agent (malformed handoff -> HandoffHalted
 -> job fails, dead-letter already written). Budget is checked up front: when
@@ -78,14 +81,15 @@ class Orchestrator:
 
     def __init__(self, *, agents: OrchestratorAgents, job_store: JobStore,
                  cost_guard: CostGuard, brand: BrandConfig, dead_letter_sink=None,
-                 narrative_conflict_sink=None, post_history_store=None,
-                 embeddings=None, review_store=None, notifier=None):
+                 post_history_store=None, embeddings=None, review_store=None, notifier=None):
         self._a = agents
         self._jobs = job_store
         self._cost = cost_guard
         self._brand = brand
         self._dl = dead_letter_sink
-        self._nc = narrative_conflict_sink   # separate from dead_letter — see module docstring
+        # narrative-conflict sink write lives in strategy.py, next to the check that
+        # triggers it — Orchestrator only owns halting the JOB (status/JobResult), see
+        # _halt_narrative_conflict() below.
         self._post_history = post_history_store   # duplicate_check / narrative_gap_check for Timing
         self._embeddings = embeddings             # computes post_angle_embedding at stage time;
                                                    # None -> safe_embed degrades gracefully (see below)
@@ -254,11 +258,9 @@ class Orchestrator:
             return result("failed", reason=f"unexpected error: {type(exc).__name__}: {exc}")
 
     async def _halt_narrative_conflict(self, jid, item, strategy_out, result) -> JobResult:
+        # sink write already happened in strategy.py, next to the check itself —
+        # this only owns halting the JOB, since only the Orchestrator has JobStore access.
         await self._jobs.update(jid, status="narrative_conflict")
-        if self._nc is not None:
-            await self._nc.record(
-                job_id=jid, item_id=item.item_id, chosen_angle=strategy_out.chosen_angle,
-                conflict_note=strategy_out.narrative_conflict_note, source_url=str(item.source_url))
         return result("narrative_conflict", reason=strategy_out.narrative_conflict_note,
                      item=item, strategy=strategy_out)
 
