@@ -17,6 +17,8 @@ from typing import Any, Optional
 
 from engine.core.cost_guard import CostGuard
 from engine.core.models import DistributionPlan, PostingMode
+from engine.core.models import StagedPost as StagedPostRecord   # avoid collision with
+                                                                  # social_apis.StagedPost below
 from engine.core.resilience import CircuitBreaker, RetryConfig, resilient_call
 from engine.core.validation_gate import ValidationGate
 from engine.tools.social_apis import PlatformAdapter, PublishBlocked, StagedPost
@@ -80,6 +82,36 @@ class DistributionAgent:
         validated = await self._gate.validate(DistributionPlan, plan.model_dump(),
                                                job_id=job_id, step="distribution.stage")
         return StagedBundle(plan=validated, staged=staged)
+
+    async def stage_v2(self, *, staged: StagedPostRecord, job_id: str) -> StagedBundle:
+        """Additive Phase 2 method. Reuses XAdapter unchanged, which already
+        chains every post sequentially by real tweet ID (verified in
+        x_client.py's post_thread()) -- gets the spec's "two-call posting
+        sequence" (or full N-call chain for a thread) for free.
+
+        NEVER publishes. requires_human_approval on `staged` is Literal[True]
+        by construction, not something this method has to enforce -- a
+        StagedPostRecord with it False is unconstructable. The actual post
+        only happens later, via confirm_publish() below (unchanged),
+        triggered by a human clicking Approve on the review dashboard.
+        """
+        content = {
+            "x_thread": staged.thread_tweets or [staged.main_post],
+            "link": staged.reply_link,
+        }
+        x_adapter = next((a for a in self._adapters if a.name == "x"), None)
+        if x_adapter is None:
+            raise PublishBlocked("no X adapter configured")
+        sp = x_adapter.stage(content)
+        if sp.estimated_cost_usd:
+            await self._cost.record_external(
+                job_id=job_id, brand_id=self._brand_id, agent=f"{self.name}.x",
+                usd=sp.estimated_cost_usd, label="x-api")
+        plan = DistributionPlan(posting_mode=PostingMode.confirm, platforms=["x"],
+                                staged=True, published=False)
+        validated = await self._gate.validate(DistributionPlan, plan.model_dump(),
+                                              job_id=job_id, step="distribution.stage_v2")
+        return StagedBundle(plan=validated, staged={"x": sp})
 
     async def confirm_publish(self, *, bundle: StagedBundle, platform: str, http: Any,
                               confirmed: bool, job_id: str,
