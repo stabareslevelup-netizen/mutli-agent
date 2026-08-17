@@ -154,14 +154,14 @@ class Orchestrator:
                     return await self._halt_narrative_conflict(jid, item, strategy_out, result)
 
                 # --- Skeptic (max 1 'revise' retry; 'reject' halts, no retry) --
-                skeptic_out = await self._a.skeptic.review_v2(strategy=strategy_out, job_id=jid)
+                skeptic_out = await self._a.skeptic.review_v2(item=item, strategy=strategy_out, job_id=jid)
                 if skeptic_out.verdict == SkepticVerdict.revise:
                     strategy_out = await self._a.strategy.decide_v2(
                         item=item, timing=timing, memory=memory, job_id=jid,
                         skeptic_critique=skeptic_out.critique)
                     if strategy_out.narrative_conflict_flag:   # re-check after the revised pass too
                         return await self._halt_narrative_conflict(jid, item, strategy_out, result)
-                    skeptic_out = await self._a.skeptic.review_v2(strategy=strategy_out, job_id=jid)
+                    skeptic_out = await self._a.skeptic.review_v2(item=item, strategy=strategy_out, job_id=jid)
 
                 if skeptic_out.verdict != SkepticVerdict.approved:
                     await self._jobs.update(jid, status="skeptic_rejected")
