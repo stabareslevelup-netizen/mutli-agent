@@ -367,6 +367,19 @@ class CopyOutput(BaseModel):
     def _hashtags_allowed(cls, v: list[str]) -> list[str]:
         return _validate_hashtags(v)
 
+    @field_validator("thread_tweets")
+    @classmethod
+    def _thread_tweets_within_280(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        # X hard-rejects/truncates any single tweet over 280 chars, thread or
+        # not — same technical fact main_post's Field(max_length=280) already
+        # enforces; a list field can't express a per-element cap via Field(),
+        # hence this validator.
+        if v is not None:
+            too_long = [i for i, t in enumerate(v) if len(t) > 280]
+            if too_long:
+                raise ValueError(f"thread_tweets element(s) over 280 chars: indices {too_long}")
+        return v
+
     @model_validator(mode="after")
     def _no_url_in_body(self) -> "CopyOutput":
         # spec: "NON-NEGOTIABLE... never put a URL in main_post"
