@@ -135,14 +135,17 @@ class StrategyAgent(BaseAgent):
         raw = await self._complete_json(system=_SYSTEM, user=user, job_id=job_id, max_tokens=1500)
         out = await self._validate(StrategyOutput, raw, job_id=job_id, step="strategy.decide_v2")
 
-        # code-level check on the LLM's ACTUAL chosen_angle -- not LLM self-report
+        # code-level check on the LLM's ACTUAL chosen_angle -- not LLM self-report.
+        # Set UNCONDITIONALLY from the computed result (both directions), not just
+        # overridden on the positive case -- otherwise a self-reported
+        # narrative_conflict_flag=True with no real violation leaks through unchecked.
         violating = [c for c in memory.narrative if self._checker.violates(out.chosen_angle, c)]
-        if violating:
-            note = f"contradicts staked position: {violating[0].position} ({violating[0].stance})"
-            out = out.model_copy(update={"narrative_conflict_flag": True,
-                                         "narrative_conflict_note": note})
-            if self._nc is not None:
-                await self._nc.record(
-                    job_id=job_id, item_id=item.item_id, chosen_angle=out.chosen_angle,
-                    conflict_note=note, source_url=str(item.source_url))
+        note = (f"contradicts staked position: {violating[0].position} ({violating[0].stance})"
+               if violating else None)
+        out = out.model_copy(update={"narrative_conflict_flag": bool(violating),
+                                     "narrative_conflict_note": note})
+        if violating and self._nc is not None:
+            await self._nc.record(
+                job_id=job_id, item_id=item.item_id, chosen_angle=out.chosen_angle,
+                conflict_note=note, source_url=str(item.source_url))
         return out
