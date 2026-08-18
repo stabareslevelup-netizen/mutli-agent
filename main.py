@@ -2,10 +2,21 @@
 main.py — FastAPI orchestration + review API + dashboard.
 
 Builds one shared engine at startup (so the review queue persists across
-requests), wires the manual trigger (POST /jobs) and the review dashboard API
-(queue / job detail / approve / reject / procedural proposals), and serves the
-dark-editorial review_dashboard.html. Brand-agnostic: all brand values come
-from the loaded config.
+requests), wires the review dashboard API (queue / job detail / approve /
+reject / procedural proposals), and serves the dark-editorial
+review_dashboard.html. Brand-agnostic: all brand values come from the
+loaded config.
+
+Phase 2 (X-agent migration): the manual single-topic trigger path (POST
+/jobs -> ManualTrigger -> Orchestrator.run(topic=...)) is retired entirely,
+not rebuilt -- the account is fully proactive-sweep-based now.
+Orchestrator.run_sweep() takes zero topic input by design; there is no
+manual "fire one topic" entry point anymore. engine/triggers/manual_ui.py
+and engine/triggers/calendar_cron.py were deleted, not just orphaned --
+both were built entirely around single-topic firing, a premise that no
+longer exists. A schedule-based trigger that calls run_sweep() on a cadence
+would be new code, not a revival of calendar_cron.py's old shape -- not
+built here, out of scope for this change.
 """
 from __future__ import annotations
 
@@ -59,11 +70,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Media Engine", version="0.1.0", lifespan=lifespan)
 
 
-class JobRequest(BaseModel):
-    topic: str
-    entity: str | None = None
-
-
 class RejectRequest(BaseModel):
     reason: str
 
@@ -91,16 +97,6 @@ async def brand_info():
     return {"brand_id": brand.brand_id, "display_name": brand.display_name,
             "pillars": brand.pillar_ids(), "formats": brand.formats,
             "fusion_weights": brand.fusion_weights, "daily_budget_usd": brand.budget.daily_usd}
-
-
-@app.post("/jobs")
-async def create_job(req: JobRequest):
-    """Manual trigger: fires the full pipeline via Orchestrator.run. In
-    posting_mode=confirm the job is staged for review — nothing publishes."""
-    from engine.triggers.manual_ui import ManualTrigger
-    res = await ManualTrigger(app.state.engine.orchestrator).fire(topic=req.topic, entity=req.entity)
-    return {"job_id": res.job_id, "status": res.status, "reason": res.reason,
-            "cost_usd": res.cost_usd}
 
 
 # --- review dashboard API ---------------------------------------------------
