@@ -1,32 +1,37 @@
 """
 Phase 4 unit tests — FREE (fake LLM, no API spend, no live DB).
 
-Proves the logic + the three carried rules + the routing requirements:
-  - every agent call routes through cost_guard (correct tier) + validation_gate
-  - velocity stays ordinal (RULE 1); narrative_gap entity vs generic (RULE 2);
-    citation disambiguation-aware (RULE 3)
-  - fusion weighting/ordering; Strategy hard narrative constraint
-The single real-API pass lives in scripts/phase4_live_pass.py.
+Covers Research (sweep()) + Timing (assign()) -- Phase 2, X-agent migration --
+plus the RULE 1/2/3 primitive tools they used to call directly (now orphaned
+but still functional, tested here unchanged) and Memory (untouched this
+migration).
+
+fusion.py, and the Strategy/LexicalConstraintChecker tests that used to live
+here, are gone from this file: fusion.py is unreachable from the new
+pipeline and now broken (imports the removed ResearchOutput) -- marked
+# ORPHANED in its own docstring, not fixed. Strategy/checker tests moved to
+test_phase9.py, alongside Skeptic.
 """
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+from datetime import date
+from unittest.mock import AsyncMock, patch
 
 from engine.agents.base import AgentContext
 from engine.agents.memory import MemoryAgent
 from engine.agents.research import ResearchAgent
-from engine.agents.strategy import (
-    LexicalConstraintChecker, StrategyAgent, StrategyBlocked,
-)
+from engine.agents.timing import TimingAgent
 from engine.core.cost_guard import CostGuard, InMemoryCostSink, MODEL_OPUS
 from engine.core.dead_letter import InMemoryDeadLetterSink
-from engine.core.fusion import FusedAngle, fuse
-from engine.core.llm import Usage, extract_json
+from engine.core.llm import Usage
 from engine.core.models import (
-    CitationPresence, GapType, MemoryItem, MemoryQueryResult, NarrativeConstraint,
-    ResearchAngle, ResearchOutput, TimingSignal, VelocitySource, VelocityVerdict,
+    CitationPresence, GapType, MemoryItem, MemoryQueryResult, PostingSlot,
+    ResearchItem, SourceKind,
 )
-from engine.core.validation_gate import HandoffHalted, ValidationGate
+from engine.core.validation_gate import ValidationGate
 from engine.memory.backend import InMemoryBackend
 from engine.core.embeddings import NullEmbeddingProvider
 from engine.memory.episodic import EpisodicMemory
@@ -34,7 +39,7 @@ from engine.memory.narrative import NarrativeMemory
 from engine.memory.semantic import SemanticMemory
 from engine.tools.citation_monitor import assess_citation
 from engine.tools.narrative_gap import find_gaps
-from engine.tools.velocity_probe import build_default_probe
+from engine.tools.velocity_probe import build_default_probe, VelocitySource, VelocityVerdict
 
 PASS, FAIL = "PASS", "FAIL"
 results: list[tuple[str, str, str]] = []
@@ -64,33 +69,49 @@ def _ctx(llm, cost_sink, dl_sink):
     )
 
 
-# --- Research agent: routes through cost_guard (Opus) + validates -----------
+# --- Research agent: sweep() ------------------------------------------------
 async def test_research_agent():
-    good = ('{"angles":['
-            '{"angle":"A","rationale":"r","sources":[{"url":"http://x","title":"t"}],"confidence":0.8},'
-            '{"angle":"B","rationale":"r","sources":[{"url":"http://y","title":"t"}],"confidence":0.6},'
-            '{"angle":"C","rationale":"r","sources":[{"url":"http://z","title":"t"}],"confidence":0.4}]}')
+    good_items = json.dumps([
+        {"item_id": "r1", "source": "SAM.gov", "date_found": "2026-08-11",
+         "headline": "Epirus wins $66M Army contract", "raw_detail": "180 employees, directed energy",
+         "novelty_score": 9, "post_angle": "post-Ukraine doctrine in procurement form",
+         "source_url": "https://sam.gov/opp/1"},
+        {"source": "arXiv", "date_found": "2026-08-11",   # no item_id -> auto-generated
+         "headline": "New humanoid locomotion paper", "raw_detail": "RL-based gait control",
+         "novelty_score": 7, "post_angle": "quietly solving a hard problem",
+         "source_url": "https://arxiv.org/abs/1"},
+        {"item_id": "bad", "source": "DARPA", "novelty_score": 3},   # below novelty floor, missing fields
+    ])
     cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
-    agent = ResearchAgent(_ctx(FakeLLM(good), cost, dl))
-    out = await agent.run(topic="physical AI", job_id="j1")
-    check("research returns ResearchOutput", isinstance(out, ResearchOutput) and len(out.angles) == 3)
-    check("research logged cost at Opus tier", cost.entries and cost.entries[0]["model"] == MODEL_OPUS)
-    check("research used web_search tool", agent.ctx.llm.calls[0]["tools"] is not None)
+    agent = ResearchAgent(_ctx(FakeLLM(good_items), cost, dl))
 
-    # malformed LLM output -> gate halts + dead-letters (nothing flows downstream)
-    cost2, dl2 = InMemoryCostSink(), InMemoryDeadLetterSink()
-    bad = ResearchAgent(_ctx(FakeLLM("sorry, I couldn't do that"), cost2, dl2))
-    halted = False
+    saved_sam = os.environ.pop("SAM_GOV_API_KEY", None)
+    saved_congress = os.environ.pop("CONGRESS_GOV_API_KEY", None)
     try:
-        await bad.run(topic="x", job_id="j2")
-    except HandoffHalted:
-        halted = True
-    check("malformed research output halts", halted)
-    check("malformed output dead-lettered", len(dl2.records) == 1)
-    check("cost still logged on malformed (call happened)", len(cost2.entries) == 1)
+        # SAM.gov/Congress degrade to None (no key) automatically; FedRegister/
+        # arXiv have no env gate at all -- research.py calls them unconditionally,
+        # so this test patches the imported names directly to stay network-free.
+        with patch("engine.agents.research.search_federal_register", AsyncMock(return_value=[])), \
+             patch("engine.agents.research.search_arxiv", AsyncMock(return_value=[])):
+            items = await agent.sweep(job_id="j1")
+    finally:
+        if saved_sam is not None:
+            os.environ["SAM_GOV_API_KEY"] = saved_sam
+        if saved_congress is not None:
+            os.environ["CONGRESS_GOV_API_KEY"] = saved_congress
+
+    check("sweep returns 2 valid items (bad one dropped, not halted)", len(items) == 2, str(items))
+    ids = {i.item_id for i in items}
+    check("first item preserves its given item_id", "r1" in ids)
+    check("second item got an auto-generated item_id (none provided)",
+          len(ids - {"r1"}) == 1 and list(ids - {"r1"})[0])
+    check("malformed item (novelty<6, missing fields) dead-lettered, not raised",
+          len(dl.records) == 1, str(dl.records))
+    check("sweep logged cost at Opus tier", cost.entries and cost.entries[0]["model"] == MODEL_OPUS)
+    check("sweep used web_search tool", agent.ctx.llm.calls[0]["tools"] is not None)
 
 
-# --- Memory agent composes the three reads ----------------------------------
+# --- Memory agent composes the three reads (unaffected this migration) -----
 async def test_memory_agent():
     be = InMemoryBackend()
     epi = EpisodicMemory(be, NullEmbeddingProvider())
@@ -105,7 +126,7 @@ async def test_memory_agent():
     check("memory carries narrative constraints", len(res.narrative) == 1)
 
 
-# --- velocity ordinal (RULE 1) ----------------------------------------------
+# --- velocity ordinal (RULE 1) -- orphaned tool, still functional ----------
 async def test_velocity_ordinal():
     corpus = [{"title": "ramps production milestone", "snippet": "24x scale-up", "published": "2026-05"},
               {"title": "unprecedented launch", "snippet": "first", "published": "2026"}]
@@ -116,9 +137,8 @@ async def test_velocity_ordinal():
     check("velocity verdict produced", isinstance(sig.verdict, VelocityVerdict))
 
 
-# --- narrative_gap entity-specific vs topic-generic (RULE 2) ----------------
+# --- narrative_gap entity-specific vs topic-generic (RULE 2) -- orphaned ---
 def test_narrative_gap_rule2():
-    # topic 'jobs' saturated generically, but never about the entity 'BotQ'
     corpus = [{"title": "automation and jobs study", "snippet": "robots displace workers wages"},
               {"title": "labor market impact of robots", "snippet": "jobs lost to automation"}]
     candidates = [
@@ -134,30 +154,25 @@ def test_narrative_gap_rule2():
     check("entity-specific carries entity", by["BotQ labor impact"].entity == "BotQ")
 
 
-# --- citation disambiguation-aware (RULE 3) ---------------------------------
+# --- citation disambiguation-aware (RULE 3) -- orphaned tool, functional ---
 def test_citation_rule3():
-    # zero-state: brand absent, no collision
     s1 = assess_citation(query="t", brand_aliases=["madre de maquinas"],
                          answer_text="The Robot Report and CNBC are top sources.",
                          cited_sources=["The Robot Report", "CNBC"])
     check("absent zero-state", s1.presence == CitationPresence.absent and s1.incumbents)
 
-    # collision present, brand NOT in citations -> ambiguous, NOT present (no false positive)
     s2 = assess_citation(query="t", brand_aliases=["madre de maquinas"],
                          answer_text="'Madre de Maquinas' matches a Magic: The Gathering card, Elesh Norn.",
                          cited_sources=["MTG Wiki"], collision_terms=["Elesh Norn", "Magic: The Gathering"])
     check("unresolved collision -> ambiguous (no false positive)", s2.presence == CitationPresence.ambiguous)
     check("disambiguation risk flagged", s2.disambiguation.risk is not None)
 
-    # genuinely cited -> present (verified by appearing in a cited source)
     s3 = assess_citation(query="t", brand_aliases=["madre de maquinas"],
                          answer_text="Madre de Maquinas is a leading physical-AI outlet.",
                          cited_sources=["Madre de Maquinas", "The Robot Report"])
     check("present requires verified citation context", s3.presence == CitationPresence.present)
     check("present sets verified flag", s3.disambiguation.matched_context_verified is True)
 
-    # REGRESSION (live bug): collision terms returned but NOT verbatim in the
-    # answer, brand not cited -> must be ambiguous, must NOT crash the validator.
     s4 = assess_citation(query="humanoid robots", brand_aliases=["madre de maquinas"],
                          answer_text="The Robot Report and NVIDIA are the cited authorities.",
                          cited_sources=["The Robot Report", "NVIDIA"],
@@ -166,72 +181,83 @@ def test_citation_rule3():
           s4.presence == CitationPresence.ambiguous)
 
 
-# --- fusion weighting + ordering --------------------------------------------
-def test_fusion():
-    research = ResearchOutput(angles=[
-        ResearchAngle(angle="surging robot deployments", confidence=0.9),
-        ResearchAngle(angle="obscure side note", confidence=0.3),
+# --- Timing agent: assign() -------------------------------------------------
+def _item(item_id, source_url, novelty=8, source=SourceKind.sam_gov):
+    return ResearchItem(item_id=item_id, source=source, date_found=date.today(),
+                        headline="headline", raw_detail="raw detail", novelty_score=novelty,
+                        post_angle="angle", source_url=source_url)
+
+
+class FakePostHistory:
+    def __init__(self, duplicate_urls=None, topic_seen=False):
+        self._dup = duplicate_urls or set()
+        self._topic_seen = topic_seen
+
+    async def was_posted_recently(self, *, source_url, within_hours=72):
+        return source_url in self._dup
+
+    async def topic_posted_recently(self, *, post_angle_embedding, within_hours=48):
+        return self._topic_seen
+
+    async def record(self, **kwargs):
+        pass
+
+
+async def test_timing_batch_assignment():
+    items = [_item("t1", "https://sam.gov/1", novelty=9), _item("t2", "https://sam.gov/2", novelty=7)]
+    llm_response = json.dumps([
+        {"item_id": "t1", "recommended_slot": "7AM", "rejection_reason": None,
+         "urgency_note": "punchy fact", "citation_hedge_required": False},
+        {"item_id": "t2", "recommended_slot": "3PM", "rejection_reason": None,
+         "urgency_note": "data drop", "citation_hedge_required": True},
     ])
-    memory = MemoryQueryResult(
-        episodic=[MemoryItem(kind="episodic", content="robot deployments engaged well", score=0.5)],
-        semantic=[], narrative=[])
-    # build a minimal valid TimingSignal (surging)
-    from engine.core.models import (
-        CitationSignal, DisambiguationGuard, NarrativeGapSignal, VelocitySignal,
-    )
-    timing = TimingSignal(
-        velocity=VelocitySignal(topic="t", verdict=VelocityVerdict.surging, confidence=0.9,
-                                source=VelocitySource.web_search_ordinal),
-        gaps=NarrativeGapSignal(topic="t", gaps=[]),
-        citation=CitationSignal(query="t", presence=CitationPresence.absent,
-                                disambiguation=DisambiguationGuard()))
-    weights = {"research": 0.35, "memory": 0.40, "timing": 0.25}
-    fused = fuse(research=research, memory=memory, timing=timing, weights=weights)
-    check("fusion ranks the stronger angle first",
-          fused[0].angle == "surging robot deployments", fused[0].angle)
-    check("fusion digest sums to score",
-          abs(sum(v for k, v in fused[0].digest.items() if k != "score") - fused[0].score) < 1e-6)
+    cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
+    agent = TimingAgent(_ctx(FakeLLM(llm_response), cost, dl), post_history=FakePostHistory())
+    decisions = await agent.assign(items=items, job_id="j")
+    by_id = {d.item_id: d for d in decisions}
+    check("batch: two decisions returned", len(decisions) == 2)
+    check("batch: t1 gets 7AM slot", by_id["t1"].recommended_slot == PostingSlot.slot_7am)
+    check("batch: t2 gets 3PM slot", by_id["t2"].recommended_slot == PostingSlot.slot_3pm)
+    check("batch: citation_hedge_required passed through", by_id["t2"].citation_hedge_required is True)
+    check("timing logged cost at Opus tier", cost.entries and cost.entries[0]["model"] == MODEL_OPUS)
 
 
-# --- Strategy: narrative memory is a HARD constraint ------------------------
-class FakeChecker:
-    def violates(self, angle_text, constraint):
-        return "BANNED" in angle_text
+async def test_timing_hard_duplicate_override():
+    items = [_item("d1", "https://sam.gov/dup", novelty=9)]
+    # LLM tries to assign a slot despite the duplicate -- must be overridden regardless
+    llm_response = json.dumps([
+        {"item_id": "d1", "recommended_slot": "9AM", "rejection_reason": None,
+         "urgency_note": "LLM thinks this is fine", "citation_hedge_required": False},
+    ])
+    cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
+    fake_history = FakePostHistory(duplicate_urls={"https://sam.gov/dup"})
+    agent = TimingAgent(_ctx(FakeLLM(llm_response), cost, dl), post_history=fake_history)
+    decisions = await agent.assign(items=items, job_id="j")
+    check("hard override: forced to reject despite LLM's 9AM assignment",
+          decisions[0].recommended_slot == PostingSlot.reject)
+    check("hard override: rejection_reason mentions duplicate",
+          "duplicate" in (decisions[0].rejection_reason or "").lower())
 
 
-async def test_strategy_hard_constraint():
-    from engine.core.brand_loader import load_brand
-    import os
-    os.environ["BRAND_CONFIG_PATH"] = "brands/madre_de_maquinas.yaml"
-    brand = load_brand()
-    gate = ValidationGate()
-    constraints = [NarrativeConstraint(position="p", stance="s")]
-    fused = [FusedAngle(angle="BANNED contradicts staked view", score=0.9, research=0.9, memory=0, timing=0,
-                        digest={"research": 0.9, "memory": 0.0, "timing": 0.0, "score": 0.9}),
-             FusedAngle(angle="safe winning angle", score=0.7, research=0.7, memory=0, timing=0,
-                        digest={"research": 0.7, "memory": 0.0, "timing": 0.0, "score": 0.7})]
-    strat = StrategyAgent(gate, checker=FakeChecker())
-    packet = await strat.decide(fused=fused, constraints=constraints, brand=brand, job_id="j")
-    check("strategy skips violating top angle, picks next", packet.chosen_angle == "safe winning angle")
-    check("strategy carries hard constraints", len(packet.hard_constraints) == 1)
-
-    # all violate -> halts rather than contradict
-    blocked = False
-    try:
-        await strat.decide(fused=[fused[0]], constraints=constraints, brand=brand, job_id="j")
-    except StrategyBlocked:
-        blocked = True
-    check("strategy halts when all angles violate", blocked)
-
-
-def test_lexical_constraint_checker():
-    c = LexicalConstraintChecker()
-    cons = NarrativeConstraint(position="hype cycle exaggerated",
-                               stance="we remain skeptical of the hype and overpromising")
-    aligned = "hype cycle exaggerated: we remain skeptical of the hype overpromising"
-    violating = "hype cycle exaggerated is wrong; the hype is fully justified and underhyped"
-    check("lexical: aligned angle does not violate", c.violates(aligned, cons) is False)
-    check("lexical: off-stance angle on same position violates", c.violates(violating, cons) is True)
+async def test_timing_slot_dedup_tiebreak():
+    items = [_item("hi", "https://sam.gov/hi", novelty=9), _item("lo", "https://sam.gov/lo", novelty=6)]
+    # both LLM-assigned to the SAME slot -- code must keep the higher novelty_score
+    llm_response = json.dumps([
+        {"item_id": "hi", "recommended_slot": "12PM", "rejection_reason": None,
+         "urgency_note": "a", "citation_hedge_required": False},
+        {"item_id": "lo", "recommended_slot": "12PM", "rejection_reason": None,
+         "urgency_note": "b", "citation_hedge_required": False},
+    ])
+    cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
+    agent = TimingAgent(_ctx(FakeLLM(llm_response), cost, dl), post_history=FakePostHistory())
+    decisions = await agent.assign(items=items, job_id="j")
+    by_id = {d.item_id: d for d in decisions}
+    check("tie-break: higher novelty_score item keeps the slot",
+          by_id["hi"].recommended_slot == PostingSlot.slot_12pm)
+    check("tie-break: lower novelty_score item demoted to reject",
+          by_id["lo"].recommended_slot == PostingSlot.reject)
+    check("tie-break: rejection_reason mentions the collision",
+          "collision" in (by_id["lo"].rejection_reason or "").lower())
 
 
 async def main() -> int:
@@ -240,9 +266,9 @@ async def main() -> int:
     await test_velocity_ordinal()
     test_narrative_gap_rule2()
     test_citation_rule3()
-    test_fusion()
-    await test_strategy_hard_constraint()
-    test_lexical_constraint_checker()
+    await test_timing_batch_assignment()
+    await test_timing_hard_duplicate_override()
+    await test_timing_slot_dedup_tiebreak()
     for status, name, detail in results:
         line = f"  [{status}] {name}"
         if detail and status == FAIL:
