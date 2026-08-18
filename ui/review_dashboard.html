@@ -123,23 +123,37 @@ async function loadQueue(){
     </div>`).join("");
 }
 
+const FORMAT_LABEL = {thread: "Thread", pov_post: "POV Post", short_hook: "Short Hook", data_drop: "Data Drop"};
+const QUALITY_DIMS = ["source_specificity", "differentiation", "hook_strength", "format_compliance", "thesis_alignment"];
+const DIM_LABEL = {source_specificity: "source", differentiation: "differ.", hook_strength: "hook",
+  format_compliance: "format", thesis_alignment: "thesis"};
+
 async function loadJob(id){
   current = id;
   const i = await (await fetch("/review/job/"+id)).json();
   const a = i.attribution;
-  // content panel
+  const isThread = i.format_used === "thread";
+  // content panel — approval_note first, then main_post/thread, reply_link, quality_scores, source_url
   $("#content").innerHTML = `
-    <h2>CONTENT <span class="tag">text-only</span></h2>
-    <div class="label">X thread</div>
-    <div class="copy-box">${(i.x_thread||[]).map(t=>`<div class="tweet">${esc(t)}</div>`).join("")}</div>
-    <div class="label">IG caption</div><div class="copy-box">${esc(i.ig_caption)}</div>
-    <div class="label">Quality</div>
+    <h2>CONTENT <span class="tag">${FORMAT_LABEL[i.format_used] || i.format_used}</span></h2>
+    <div class="label">Approval note — read this first</div>
+    <div class="copy-box">${esc(i.approval_note) || "<span class='pill'>none flagged</span>"}</div>
+    <div class="label">${isThread ? "Thread" : "Post"}</div>
+    <div class="copy-box">${isThread
+      ? (i.thread_tweets||[]).map(t=>`<div class="tweet">${esc(t)}</div>`).join("")
+      : esc(i.main_post)}</div>
+    <div class="label">Reply link (posted as the chained final reply)</div>
+    <div class="copy-box">${esc(i.reply_link)}</div>
+    <div class="label">Quality — ${esc(i.quality_route)}</div>
     <div class="scores">
-      ${["voice","narrative","format","hook","coherence"].map(k=>`<div class="score"><div class="v">${(a.quality[k]??0).toFixed(2)}</div><div class="k">${k}</div></div>`).join("")}
-      <div class="score overall"><div class="v">${(a.quality.overall??0).toFixed(2)}</div><div class="k">overall</div></div>
+      ${QUALITY_DIMS.map(k=>`<div class="score"><div class="v">${(a.quality[k]??0)}</div><div class="k">${DIM_LABEL[k]}</div></div>`).join("")}
+      <div class="score overall"><div class="v">${(a.quality.total??0)}</div><div class="k">total /50</div></div>
     </div>
+    <div class="label">Source — verify before approving</div>
+    <div><a href="${esc(i.source_url)}" target="_blank" rel="noopener" style="color:var(--pink)">${esc(i.source_url)}</a>
+      <span class="pill">novelty ${i.novelty_score}/10</span> <span class="pill">${esc(i.scheduled_slot)} slot</span></div>
     <div class="label">Staged platforms</div>
-    <div>${(i.platforms||[]).map(p=>`<span class="pill">${p}</span>`).join("")} ${i.auto_eligible?'':'<span class="pill gap">human review required</span>'}</div>
+    <div>${(i.platforms||[]).map(p=>`<span class="pill">${p}</span>`).join("")}</div>
     <div class="actions">
       <button class="approve" onclick="approve('${i.job_id}')">✓ Approve — confirm publish</button>
       <button class="reject" onclick="reject('${i.job_id}')">✕ Reject</button>
@@ -147,21 +161,18 @@ async function loadJob(id){
   // attribution panel (screenshot-able)
   $("#attr").innerHTML = `
     <h2>AGENTS THAT BUILT THIS</h2>
-    <div class="agentcard"><div class="who">RESEARCH <small>chosen angle + alternatives</small></div>
-      <div class="body">${esc(a.research_chosen)}
-      ${(a.research_alternatives||[]).map(x=>`<div class="alt">${esc(x)}</div>`).join("")}</div></div>
-    <div class="agentcard"><div class="who">TIMING <small>velocity · gaps · citation</small></div>
-      <div class="body">velocity: <span class="verdict">${a.timing_velocity}</span> (conf ${(a.timing_velocity_confidence||0).toFixed(2)}) ·
-      citation: ${a.timing_citation} ${i.requires_hedging?'<span class="pill gap">verification mode — claims hedged</span>':''}<br/>
-      open narrative gaps: ${(a.timing_gaps||[]).map(g=>`<span class="pill gap">${esc(g)}</span>`).join("")||"<span class='pill'>none</span>"}</div></div>
+    <div class="agentcard"><div class="who">RESEARCH <small>what was found</small></div>
+      <div class="body">${esc(a.research_chosen)}</div></div>
+    <div class="agentcard"><div class="who">TIMING <small>citation confidence</small></div>
+      <div class="body">${a.timing_citation} ${i.requires_hedging?'<span class="pill gap">verification mode — claims hedged</span>':''}</div></div>
     <div class="agentcard"><div class="who">SKEPTIC <small>adversarial review — finds the mistake first</small></div>
       <div class="body">${esc(a.skeptic_summary)||"<span class='pill'>no caution flagged</span>"}</div></div>
     <div class="agentcard"><div class="who">MEMORY <small>relevant past context</small></div>
       <div class="body">${(a.memory_context||[]).map(m=>`<div class="alt">${esc(m)}</div>`).join("")||"<span class='pill'>cold start — no prior context</span>"}</div></div>
     <div class="agentcard"><div class="who">COPY <small>output time</small></div>
-      <div class="body">generated ${(i.x_thread||[]).length} tweets + caption + script in <span class="verdict">${a.copy_output_seconds}s</span></div></div>
+      <div class="body">generated ${isThread ? (i.thread_tweets||[]).length + " tweets" : "1 post"} in <span class="verdict">${a.copy_output_seconds}s</span></div></div>
     <div class="agentcard"><div class="who">QUALITY <small>5-dimension score</small></div>
-      <div class="body">voice ${(a.quality.voice??0).toFixed(2)} · narrative ${(a.quality.narrative??0).toFixed(2)} · format ${(a.quality.format??0).toFixed(2)} · hook ${(a.quality.hook??0).toFixed(2)} · coherence ${(a.quality.coherence??0).toFixed(2)} → <span class="verdict">${(a.quality.overall??0).toFixed(2)}</span></div></div>
+      <div class="body">${QUALITY_DIMS.map(k=>`${DIM_LABEL[k]} ${a.quality[k]??0}`).join(" · ")} → <span class="verdict">${a.quality.total??0}/50 (${esc(i.quality_route)})</span></div></div>
     <div class="watermark">⬢ generated by Madre de Máquinas · multi-agent media engine</div>`;
   loadQueue();
 }
