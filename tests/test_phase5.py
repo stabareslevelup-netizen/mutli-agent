@@ -1,35 +1,24 @@
 """
-Phase 5 unit tests — FREE (fake LLM / mock backends, no API spend, no network).
+Phase 5 unit tests — FREE (fake LLM, no API spend, no live DB).
 
-Covers Copy, Quality, Distribution (text-only pipeline: no Prompt Engineer /
-Production / Higgsfield — removed when video generation was dropped from scope):
-  - cost_guard tiering (Copy=Sonnet, Quality=Opus)
-  - validation_gate on every handoff
-  - Quality: text auto-eligible only at >=0.85
-  - Distribution confirm-mode only; X cost link vs reply; IG/YT not live
-    (both correctly excluded from staging when there's no media asset);
-    auto/scheduled dormant; resilience + dead-letter on publish failure
+Covers Copy (write_v2()) and Quality (evaluate_v2()) -- Phase 2, X-agent
+migration. Same fake-transport pattern as test_phase4.py: FakeLLM returns
+canned text, no real network/API calls anywhere.
 """
 from __future__ import annotations
 
 import asyncio
-import os
+import json
 
 from engine.agents.base import AgentContext
 from engine.agents.copy_agent import CopyAgent
-from engine.agents.distribution import DistributionAgent, PostingModeDisabled
 from engine.agents.quality import QualityAgent
-from engine.core.brand_loader import load_brand
 from engine.core.cost_guard import CostGuard, InMemoryCostSink, MODEL_OPUS, MODEL_SONNET
 from engine.core.dead_letter import InMemoryDeadLetterSink
 from engine.core.llm import Usage
-from engine.core.models import CopyOutput, DistributionPlan, PostingMode, QualityRoute, StrategyPacket
+from engine.core.models import PostFormat, PostingSlot, StrategyOutput, TimingDecision
 from engine.core.validation_gate import HandoffHalted, ValidationGate
-from engine.tools.social_apis import (
-    InstagramAdapter, PublishBlocked, XAdapter, YouTubeAdapter,
-)
 
-os.environ["BRAND_CONFIG_PATH"] = "brands/madre_de_maquinas.yaml"
 PASS, FAIL = "PASS", "FAIL"
 results: list[tuple[str, str, str]] = []
 
@@ -39,166 +28,219 @@ def check(name, cond, detail=""):
 
 
 class FakeLLM:
-    def __init__(self, text):
+    """Returns a canned text + fixed usage; records the model it was called with."""
+    def __init__(self, text: str):
         self._text = text
-        self.calls = []
+        self.calls: list[dict] = []
 
     async def complete(self, *, model, system, user, tools=None, max_tokens=2048, **kw):
-        self.calls.append(model)
-        return self._text, Usage(input_tokens=200, output_tokens=80)
+        self.calls.append({"model": model, "user": user})
+        return self._text, Usage(input_tokens=120, output_tokens=40)
 
 
-def _ctx(llm, cost, dl, brand):
-    return AgentContext(llm=llm,
-                        cost_guard=CostGuard(daily_budget_usd=brand.budget.daily_usd, cost_sink=cost),
-                        gate=ValidationGate(dead_letter_sink=dl), brand_id=brand.brand_id)
+def _ctx(llm, cost_sink, dl_sink):
+    return AgentContext(
+        llm=llm,
+        cost_guard=CostGuard(daily_budget_usd=5.0, cost_sink=cost_sink),
+        gate=ValidationGate(dead_letter_sink=dl_sink),
+        brand_id="b",
+    )
 
 
-def _packet(brand):
-    return StrategyPacket(chosen_angle="robots building robots", rationale="top",
-                          formats=brand.formats, fusion_weights=brand.fusion_weights,
-                          hard_constraints=[], inputs_digest={})
+def _strategy(format=PostFormat.pov_post, thread_spine=None):
+    return StrategyOutput(chosen_angle="Epirus wins $66M Army contract",
+                          format=format, must_include=["$66M", "Epirus"],
+                          must_avoid=["hype"], hashtags=["#DefenseTech"],
+                          thread_spine=thread_spine)
 
 
-async def test_copy():
-    brand = load_brand()
+def _timing(hedge=False):
+    return TimingDecision(item_id="i1", recommended_slot=PostingSlot.slot_3pm,
+                          urgency_note="note", citation_hedge_required=hedge)
+
+
+# ===========================================================================
+# Copy agent: write_v2()
+# ===========================================================================
+async def test_copy_happy_path():
+    resp = json.dumps({"main_post": "Epirus just won a $66M Army contract for directed energy.",
+                       "reply_link": "Source: https://sam.gov/opp/1",
+                       "format_used": "pov_post", "hashtags_used": ["#DefenseTech"]})
     cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
-    text = '{"x_thread":["t1","t2"],"ig_caption":"cap","youtube_script":"script"}'
-    agent = CopyAgent(_ctx(FakeLLM(text), cost, dl, brand))
-    out = await agent.run(packet=_packet(brand), brand=brand, job_id="j")
-    check("copy returns CopyOutput", isinstance(out, CopyOutput) and len(out.x_thread) == 2)
-    check("copy on Sonnet tier", cost.entries[0]["model"] == MODEL_SONNET)
+    agent = CopyAgent(_ctx(FakeLLM(resp), cost, dl))
+    out = await agent.write_v2(strategy=_strategy(), timing=_timing(), job_id="j1")
+    check("copy returns CopyOutput with main_post", out.main_post.startswith("Epirus"))
+    check("copy carries reply_link", out.reply_link == "Source: https://sam.gov/opp/1")
+    check("copy logged cost at Sonnet tier", cost.entries and cost.entries[0]["model"] == MODEL_SONNET)
 
 
-async def test_quality_routing():
-    brand = load_brand()
+async def test_copy_char_count_never_trusted():
+    # LLM includes a bogus char_count -- must be ignored, real len() used instead
+    from engine.agents.copy_agent import _SYSTEM as _COPY_SYSTEM
+    text = "Epirus just won a $66M Army contract for directed energy systems."
+    resp = json.dumps({"main_post": text, "reply_link": "Source: https://sam.gov/1",
+                       "format_used": "pov_post", "char_count": 999999})
     cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
-    hi = '{"voice":0.9,"narrative":0.9,"format":0.9,"hook":0.9,"coherence":0.9,"reasons":["on voice"]}'
-    content = CopyOutput(x_thread=["a"], ig_caption="b", youtube_script="c")
-
-    q_text, auto_text = await QualityAgent(_ctx(FakeLLM(hi), cost, dl, brand)).evaluate(
-        content=content, brand=brand, job_id="j")
-    check("quality on Opus tier", cost.entries[0]["model"] == MODEL_OPUS)
-    check("high text -> publish_queue", q_text.route == QualityRoute.publish_queue)
-    check("high text -> auto eligible (>=0.85)", auto_text is True)
-
-    lo = '{"voice":0.3,"narrative":0.3,"format":0.3,"hook":0.3,"coherence":0.3,"reasons":["off"]}'
-    cost3 = InMemoryCostSink()
-    q_lo, auto_lo = await QualityAgent(_ctx(FakeLLM(lo), cost3, dl, brand)).evaluate(
-        content=content, brand=brand, job_id="j")
-    check("low score -> reject", q_lo.route == QualityRoute.reject)
-    check("low score -> not auto", auto_lo is False)
+    agent = CopyAgent(_ctx(FakeLLM(resp), cost, dl))
+    out = await agent.write_v2(strategy=_strategy(), timing=_timing(), job_id="j1")
+    check("char_count matches real len(), not the LLM's bogus 999999",
+          out.char_count == len(text), f"got {out.char_count}, expected {len(text)}")
+    check("prompt system text never requests char_count from the model",
+          "char_count" not in _COPY_SYSTEM)
+    check("the user turn (this call's actual content) never mentions char_count either",
+          "char_count" not in agent.ctx.llm.calls[0]["user"])
 
 
-async def test_quality_malformed_halts():
-    brand = load_brand()
+async def test_copy_no_url_in_body_rejected():
+    resp = json.dumps({"main_post": "Check the source at https://sam.gov/opp/1 for details.",
+                       "reply_link": "Source: https://sam.gov/1", "format_used": "pov_post"})
     cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
+    agent = CopyAgent(_ctx(FakeLLM(resp), cost, dl))
     halted = False
     try:
-        await QualityAgent(_ctx(FakeLLM("no json here"), cost, dl, brand)).evaluate(
-            content=CopyOutput(x_thread=["a"]), brand=brand, job_id="j")
+        await agent.write_v2(strategy=_strategy(), timing=_timing(), job_id="j1")
     except HandoffHalted:
         halted = True
-    check("malformed quality output halts + dead-letters", halted and len(dl.records) == 1)
+    check("URL in main_post -> HandoffHalted (structural rejection)", halted)
+    check("URL rejection dead-lettered", len(dl.records) == 1)
 
 
-# --- Distribution ----------------------------------------------------------
-class FakeXHttp:
-    def __init__(self, fail=False):
-        self.fail = fail
-        self.posted = None
-
-    async def post_thread(self, posts):
-        if self.fail:
-            raise ConnectionError("x api down")
-        self.posted = posts
-        return {"ids": [f"x{i}" for i in range(len(posts))]}
-
-
-async def test_distribution_confirm_only():
-    brand = load_brand()
+async def test_copy_thread_tweet_over_280_rejected():
+    long_tweet = "x" * 281
+    spine = ["hook", "evidence", "context", "stakes"]
+    resp = json.dumps({"main_post": "hook", "reply_link": "Source: https://sam.gov/1",
+                       "format_used": "thread", "thread_tweets": ["hook", long_tweet]})
     cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
-    gate = ValidationGate(dl)
-    adapters = [XAdapter(link_mode="reply"), InstagramAdapter(), YouTubeAdapter()]
-    dist = DistributionAgent(adapters, CostGuard(daily_budget_usd=25.0, cost_sink=cost),
-                             gate, brand.brand_id, dead_letter_sink=dl)
-    # text-only content: no media asset -> IG and YouTube correctly can't stage
-    # (both platforms require a media file to publish; that's a real constraint,
-    # not a bug — see social_apis.py)
-    content = {"x_thread": ["robots are here", "thread part 2"], "ig_caption": "cap",
-               "youtube_script": "yt", "link": "https://madre.example/post"}
-
-    bundle = await dist.stage(content=content, posting_mode=PostingMode.confirm, job_id="j")
-    check("plan is confirm + staged + not published",
-          bundle.plan.posting_mode == PostingMode.confirm and bundle.plan.staged and not bundle.plan.published)
-    check("only X stages for text-only content (IG/YT need media)", set(bundle.staged) == {"x"})
-    check("IG/YT dead-lettered as no-media, not crashed",
-          any("media" in r["error"].lower() or "video" in r["error"].lower() for r in dl.records))
-
-    # X cost: reply mode -> 2 cheap text posts ($0.01) + 1 link reply ($0.20) = $0.22
-    x_cost = bundle.staged["x"].estimated_cost_usd
-    check("X reply-mode cost itemized (~$0.22)", abs(x_cost - 0.22) < 1e-6, f"x_cost={x_cost}")
-    x_entries = [e for e in cost.entries if e["model"] == "x-api"]
-    check("X per-post cost logged via cost_guard", x_entries and abs(x_entries[0]["usd"] - 0.22) < 1e-6)
-
-    # inline mode puts the URL in the main post (one $0.20 post)
-    inline = XAdapter(link_mode="inline").stage(content)
-    check("inline mode -> URL in main post", inline.contains_url and inline.cost_breakdown[0]["url"])
-
-    # confirm gate: nothing publishes without explicit human confirm
-    blocked = False
+    agent = CopyAgent(_ctx(FakeLLM(resp), cost, dl))
+    halted = False
     try:
-        await dist.confirm_publish(bundle=bundle, platform="x", http=FakeXHttp(),
-                                   confirmed=False, job_id="j")
-    except PublishBlocked:
-        blocked = True
-    check("publish blocked without human confirm", blocked)
-
-    # X live + confirmed -> publishes
-    ok = await dist.confirm_publish(bundle=bundle, platform="x", http=FakeXHttp(),
-                                    confirmed=True, job_id="j")
-    check("X publishes after confirm", ok.published is True)
-
-    # X failure -> resilience + dead-letter, no crash
-    pre = len(dl.records)
-    fail = await dist.confirm_publish(bundle=bundle, platform="x", http=FakeXHttp(fail=True),
-                                      confirmed=True, job_id="j")
-    check("X publish failure handled (not published)", fail.published is False)
-    check("publish failure dead-lettered", len(dl.records) > pre)
+        await agent.write_v2(strategy=_strategy(format=PostFormat.thread, thread_spine=spine),
+                             timing=_timing(), job_id="j1")
+    except HandoffHalted:
+        halted = True
+    check("thread_tweets element over 280 chars -> HandoffHalted", halted)
 
 
-async def test_distribution_with_media_stages_ig():
-    # if an asset URL IS present (e.g. a manually-added image), IG can stage —
-    # proves the platform rule is about media presence, not a hardcoded skip
-    brand = load_brand()
+async def test_copy_citation_hedged_from_code_not_llm():
+    # LLM explicitly self-reports citation_hedged=False; timing says hedge IS required
+    resp = json.dumps({"main_post": "Per the solicitation, DARPA is funding this.",
+                       "reply_link": "Source: https://darpa.mil/1", "format_used": "pov_post",
+                       "citation_hedged": False})
     cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
-    gate = ValidationGate(dl)
-    dist = DistributionAgent([InstagramAdapter()], CostGuard(daily_budget_usd=25.0, cost_sink=cost),
-                             gate, brand.brand_id, dead_letter_sink=dl)
-    content = {"ig_caption": "cap", "media_url": "https://cdn.example/x.jpg"}
-    bundle = await dist.stage(content=content, posting_mode=PostingMode.confirm, job_id="j")
-    check("IG stages when media_url is present", "instagram" in bundle.staged)
+    agent = CopyAgent(_ctx(FakeLLM(resp), cost, dl))
+    out = await agent.write_v2(strategy=_strategy(), timing=_timing(hedge=True), job_id="j1")
+    check("citation_hedged forced True from timing, overriding the LLM's self-reported False",
+          out.citation_hedged is True)
 
 
-async def test_auto_mode_dormant():
-    brand = load_brand()
-    dist = DistributionAgent([XAdapter()], CostGuard(daily_budget_usd=25.0),
-                             ValidationGate(), brand.brand_id)
-    disabled = False
-    try:
-        await dist.stage(content={"x_thread": ["x"]}, posting_mode=PostingMode.auto, job_id="j")
-    except PostingModeDisabled:
-        disabled = True
-    check("auto/scheduled mode is dormant in v1", disabled)
+async def test_copy_thread_main_post_normalized():
+    spine = ["hook", "evidence", "context", "stakes"]
+    resp = json.dumps({
+        "main_post": "a completely different, wrong hook the LLM wrote",
+        "reply_link": "Source: https://sam.gov/1", "format_used": "thread",
+        "thread_tweets": ["the REAL first tweet / hook", "second tweet", "third tweet"]})
+    cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
+    agent = CopyAgent(_ctx(FakeLLM(resp), cost, dl))
+    out = await agent.write_v2(strategy=_strategy(format=PostFormat.thread, thread_spine=spine),
+                               timing=_timing(), job_id="j1")
+    check("main_post normalized to thread_tweets[0], not the LLM's mismatched main_post",
+          out.main_post == "the REAL first tweet / hook", out.main_post)
+
+
+async def test_copy_one_call_writes_whole_thread():
+    spine = ["hook", "evidence", "context", "stakes", "prediction"]
+    resp = json.dumps({
+        "main_post": "hook", "reply_link": "Source: https://sam.gov/1", "format_used": "thread",
+        "thread_tweets": ["hook", "t2", "t3", "t4", "t5"]})
+    cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
+    llm = FakeLLM(resp)
+    agent = CopyAgent(_ctx(llm, cost, dl))
+    out = await agent.write_v2(strategy=_strategy(format=PostFormat.thread, thread_spine=spine),
+                               timing=_timing(), job_id="j1")
+    check("exactly one LLM call writes the whole 5-tweet thread, not one per segment",
+          len(llm.calls) == 1, f"got {len(llm.calls)} calls")
+    check("all 5 thread tweets present in one shot", len(out.thread_tweets) == 5)
+
+
+# ===========================================================================
+# Quality agent: evaluate_v2()
+# ===========================================================================
+def _copy_output():
+    from engine.core.models import CopyOutput
+    return CopyOutput(main_post="Epirus just won a $66M Army contract for directed energy.",
+                      reply_link="Source: https://sam.gov/1", format_used=PostFormat.pov_post)
+
+
+def _scores(**overrides):
+    base = {"source_specificity": 8, "differentiation": 8, "hook_strength": 8,
+            "format_compliance": 8, "thesis_alignment": 8}
+    base.update(overrides)
+    return base
+
+
+async def test_quality_happy_path():
+    resp = json.dumps({"scores": _scores(), "notes": [], "approval_note": "Looks clean."})
+    cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
+    agent = QualityAgent(_ctx(FakeLLM(resp), cost, dl))
+    out = await agent.evaluate_v2(copy=_copy_output(), job_id="j1")
+    check("quality all-8s -> pass verdict", out.verdict.value == "pass")
+    check("quality total sums the 5 scores", out.total == 40, out.total)
+    check("quality blocking_dimension is None on pass", out.blocking_dimension is None)
+    check("quality logged cost at Opus tier", cost.entries and cost.entries[0]["model"] == MODEL_OPUS)
+
+
+async def test_quality_verdict_never_trusted_from_llm():
+    # LLM self-reports pass/40/None despite genuinely low scores (should compute to reject)
+    low_scores = _scores(source_specificity=2)
+    resp = json.dumps({"scores": low_scores, "verdict": "pass", "total": 999,
+                       "blocking_dimension": None, "notes": [], "approval_note": "fine"})
+    cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
+    agent = QualityAgent(_ctx(FakeLLM(resp), cost, dl))
+    out = await agent.evaluate_v2(copy=_copy_output(), job_id="j1")
+    check("LLM's self-reported verdict='pass' is IGNORED -- real verdict is reject",
+          out.verdict.value == "reject", out.verdict.value)
+    check("LLM's self-reported total=999 is IGNORED -- real total computed from scores",
+          out.total == sum(low_scores.values()), out.total)
+    check("LLM's self-reported blocking_dimension=None is IGNORED -- real one is computed",
+          out.blocking_dimension == "source_specificity", out.blocking_dimension)
+
+
+async def test_quality_format_compliance_prompt_scopes_to_banned_words():
+    # can't verify a live LLM's judgment without a real model call -- what IS
+    # verifiable is that the prompt actually tells it to ignore already-
+    # guaranteed checks and score only on banned words, per the design.
+    from engine.agents.quality import _SYSTEM
+    check("prompt tells the model char/URL/hashtag are pre-guaranteed",
+          "already" in _SYSTEM.lower() and "guaranteed" in _SYSTEM.lower())
+    check("prompt scopes format_compliance to banned words only",
+          "banned words" in _SYSTEM.lower() or "revolutionary" in _SYSTEM.lower())
+
+
+async def test_quality_verdict_thresholds():
+    # confirmed against models.py's actual _compute_gate: lowest<5 -> reject,
+    # 5<=lowest<7 -> revise, lowest>=7 -> pass (gated on the MIN dimension).
+    cases = [(4, "reject"), (5, "revise"), (6, "revise"), (7, "pass")]
+    for lowest, expected in cases:
+        resp = json.dumps({"scores": _scores(hook_strength=lowest), "notes": [], "approval_note": "x"})
+        cost, dl = InMemoryCostSink(), InMemoryDeadLetterSink()
+        agent = QualityAgent(_ctx(FakeLLM(resp), cost, dl))
+        out = await agent.evaluate_v2(copy=_copy_output(), job_id="j1")
+        check(f"lowest dimension={lowest} -> verdict={expected}",
+              out.verdict.value == expected, out.verdict.value)
 
 
 async def main() -> int:
-    await test_copy()
-    await test_quality_routing()
-    await test_quality_malformed_halts()
-    await test_distribution_confirm_only()
-    await test_distribution_with_media_stages_ig()
-    await test_auto_mode_dormant()
+    await test_copy_happy_path()
+    await test_copy_char_count_never_trusted()
+    await test_copy_no_url_in_body_rejected()
+    await test_copy_thread_tweet_over_280_rejected()
+    await test_copy_citation_hedged_from_code_not_llm()
+    await test_copy_thread_main_post_normalized()
+    await test_copy_one_call_writes_whole_thread()
+    await test_quality_happy_path()
+    await test_quality_verdict_never_trusted_from_llm()
+    await test_quality_format_compliance_prompt_scopes_to_banned_words()
+    await test_quality_verdict_thresholds()
     for status, name, detail in results:
         line = f"  [{status}] {name}"
         if detail and status == FAIL:

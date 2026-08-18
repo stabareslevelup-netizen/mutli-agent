@@ -1,96 +1,162 @@
 """
-engine/agents/timing.py — Timing agent [UNPROVEN, de-risked in Phase 0].
+engine/agents/timing.py — Timing agent [Phase 2, X-agent migration].
 
-Wires the three signals through the server-side web_search tool:
-  - velocity_probe  -> ordinal verdict (RULE 1: no fake-precise numbers until a
-    real time-series source is allowlisted; numeric sources self-report
-    unavailable and the probe degrades to ordinal)
-  - narrative_gap   -> entity-specific vs topic-generic white space (RULE 2)
-  - citation_monitor-> disambiguation-aware presence (RULE 3)
+Assigns each ResearchItem a posting slot (or rejects it) across the WHOLE
+batch at once -- "one item per slot per day" is a cross-item constraint,
+enforced at the code level below (LLM slot self-enforcement isn't trusted;
+see _dedup_slots).
 
-To cap spend: ONE web_search call gathers the topic corpus (shared by velocity
-+ gap), and ONE answer-engine call drives citation. Opus tier (reasoning).
-Brand-free: pillars + brand aliases are injected at runtime.
+velocity_probe.py and citation_monitor.py are NOT reused here -- they
+answer different questions than the Phase 2 fields need: the old
+citation_monitor.py checks whether OUR BRAND is cited by answer engines
+(brand-visibility tracking), while citation_hedge_required asks whether a
+specific claim needs hedging (verification confidence) -- unrelated
+questions despite the similar name. velocity_probe.py's structured ordinal
+tool was built for a single topic with a fetched corpus; TimingDecision has
+no velocity-verdict field anymore, just free-text urgency_note. Both files
+are orphaned by this migration (see their own docstrings), not deleted.
+
+duplicate_check and narrative_gap_check use PostHistoryStore, which has
+real state those old tools never had access to. Velocity/urgency judgment
+and citation-hedge judgment fold into the one batch LLM call below, same
+cost-bounding reasoning as Research.sweep().
 """
 from __future__ import annotations
 
-import re
+import json
+import logging
+from datetime import date
 from typing import Optional
 
-from engine.agents.base import BaseAgent
+from engine.agents.base import AgentContext, BaseAgent
+from engine.core.embeddings import safe_embed
 from engine.core.llm import WEB_SEARCH_TOOL
-from engine.core.models import (
-    GapType, PrimarySourceSignal, Source, TimingSignal,
+from engine.core.models import PostingSlot, ResearchItem, TimingDecision
+from engine.core.validation_gate import HandoffHalted
+
+logger = logging.getLogger(__name__)
+
+_SYSTEM = (
+    "You are the Timing Agent for an X posting pipeline. You receive a list of "
+    "ResearchItems that passed novelty scoring. Decide WHEN each should post and "
+    "WHETHER conditions are right to post it now.\n\n"
+    "POSTING SLOTS (ET):\n"
+    "7AM -- short_hook only (<=100 chars). Most punchy item.\n"
+    "9AM -- pov_post (150-240 chars). Overnight developments.\n"
+    "12PM -- thread (4-7 tweets). Deepest item.\n"
+    "3PM -- data_drop (200-260 chars). Contract award, funding, job signal.\n"
+    "6PM -- pov_post. End-of-day analysis.\n\n"
+    "For each item, you're given is_duplicate and topic_seen_recently flags "
+    "(precomputed against real post history). is_duplicate=true items must be "
+    "recommended_slot='reject' -- exact same source already posted within 72h, no "
+    "exceptions. topic_seen_recently=true items should be 'reject' UNLESS this item "
+    "directly contradicts or advances the prior post -- use judgment, explain in "
+    "urgency_note either way.\n\n"
+    "citation_hedge_required: does this item's claim rest on something preliminary, "
+    "inferred, or a single unverified document? If yes, set true -- Copy will hedge "
+    "the language. A primary-source document (a real SAM.gov award, a real bill "
+    "text) being the ONLY source does not by itself require hedging -- primary "
+    "sources are authoritative. Inference, rumor, or a single blog's interpretation "
+    "of a primary source does.\n\n"
+    "Assign AT MOST ONE item per slot -- if two genuinely compete for the same slot, "
+    "you may recommend the same slot for both; a deterministic tie-break by "
+    "novelty_score runs after your output, so don't worry about enforcing uniqueness "
+    "perfectly yourself.\n\n"
+    "Return ONLY a JSON array, no prose, no fences. Each element:\n"
+    '{"item_id":"<pass through>","recommended_slot":"7AM|9AM|12PM|3PM|6PM|reject",'
+    '"rejection_reason":"<required if reject, else null>","urgency_note":"<one '
+    'sentence>","citation_hedge_required":<bool>}'
 )
-from engine.tools.citation_monitor import assess_citation
-from engine.tools.narrative_gap import find_gaps
-from engine.tools.velocity_probe import build_default_probe
 
-_SEARCH_SYS = "You are a web research tool. Use web_search. Return ONLY JSON, no prose."
-_SEARCH_USER = ('Search for recent coverage of: {topic}\n'
-                'Return ONLY {{"results":[{{"title":..,"snippet":..,'
-                '"published":"YYYY-MM-DD or null","url":..}}]}} up to 8, recent first.')
+_USER = """Items (with precomputed duplicate/topic-recency flags):
+{items}
 
-_CITE_SYS = "You analyze answer-engine citations. Use web_search. Return ONLY JSON."
-_CITE_USER = ('For the topic "{topic}", use web_search to find which sources/outlets are '
-              'cited as authorities. Also check whether any of these brand names appear as a '
-              'cited source: {aliases}. Note any unrelated well-known entity sharing those '
-              'names (a naming collision).\n'
-              'Return ONLY {{"answer_text":"<summary naming the sources>",'
-              '"cited_sources":["<source/domain>",...],"collision_terms":["<same-name entity>",...]}}')
+Today's date: {today}
 
-
-def _terms(text: str) -> list[str]:
-    return [t for t in re.findall(r"[a-z0-9']+", text.lower()) if len(t) > 2]
+Return the JSON array as specified."""
 
 
 class TimingAgent(BaseAgent):
     name = "timing"
 
-    async def run(self, *, topic: str, job_id: str, pillars: list[dict],
-                  brand_aliases: list[str], entity: Optional[str] = None) -> TimingSignal:
-        # --- 1 web_search call: topic corpus (shared by velocity + gap) ------
-        corpus_raw = await self._complete_json(
-            system=_SEARCH_SYS, user=_SEARCH_USER.format(topic=topic),
-            job_id=job_id, tools=[WEB_SEARCH_TOOL], max_tokens=1800)
-        corpus = corpus_raw.get("results", []) if isinstance(corpus_raw, dict) else []
+    def __init__(self, ctx: AgentContext, *, post_history=None, embeddings=None):
+        super().__init__(ctx)
+        self._post_history = post_history   # PostHistoryStore; None -> both checks degrade to False
+        self._embeddings = embeddings       # EmbeddingProvider; None -> topic_posted_recently always False
 
-        # velocity: ordinal via the corpus (numeric sources stay unavailable)
-        probe = build_default_probe(search_fn=lambda _q: corpus)
-        velocity = probe.probe(topic)
+    async def assign(self, *, items: list[ResearchItem], job_id: Optional[str]) -> list[TimingDecision]:
+        if not items:
+            return []
+        precheck = await self._precheck(items)
+        payload = [{"item_id": i.item_id, "headline": i.headline, "post_angle": i.post_angle,
+                   "novelty_score": i.novelty_score, "source": i.source.value,
+                   **precheck[i.item_id]} for i in items]
+        raw = await self._complete_json(
+            system=_SYSTEM,
+            user=_USER.format(items=json.dumps(payload, default=str), today=date.today().isoformat()),
+            job_id=job_id or "sweep", tools=[WEB_SEARCH_TOOL], max_tokens=3000)
 
-        # narrative gap: pillars as topic-generic candidates + an entity-specific one
-        candidates = []
-        for p in pillars:
-            terms = _terms(f"{p.get('id','')} {p.get('desc','')}")
-            candidates.append({"angle": p.get("desc") or p.get("id", ""),
-                               "gap_type": GapType.topic_generic, "entity": None,
-                               "terms": terms or [p.get("id", "x")]})
-        if entity:
-            candidates.append({"angle": f"{entity}: incident / failure file",
-                               "gap_type": GapType.entity_specific, "entity": entity,
-                               "terms": ["incident", "fail", "malfunction", "recall", "injury", "safety"]})
-        gaps = find_gaps(topic=topic, entity=entity, corpus=corpus, candidates=candidates)
+        candidates = raw if isinstance(raw, list) else (
+            raw.get("decisions", []) if isinstance(raw, dict) else [])
+        decisions: list[TimingDecision] = []
+        for c in candidates:
+            try:
+                d = await self._validate(TimingDecision, c, job_id=job_id or "sweep",
+                                         step="timing.assign")
+            except HandoffHalted:
+                continue   # dead-lettered inside validate(); one bad item can't kill the batch
+            decisions.append(d)
 
-        # --- 1 answer-engine call: citation ---------------------------------
-        cite_raw = await self._complete_json(
-            system=_CITE_SYS,
-            user=_CITE_USER.format(topic=topic, aliases=", ".join(brand_aliases)),
-            job_id=job_id, tools=[WEB_SEARCH_TOOL], max_tokens=1200)
-        cite_raw = cite_raw if isinstance(cite_raw, dict) else {}
-        citation = assess_citation(
-            query=topic, brand_aliases=brand_aliases,
-            answer_text=cite_raw.get("answer_text", ""),
-            cited_sources=cite_raw.get("cited_sources", []),
-            collision_terms=cite_raw.get("collision_terms", []))
+        decisions = self._enforce_duplicate_override(decisions, precheck)
+        by_id = {i.item_id: i for i in items}
+        decisions = self._dedup_slots(decisions, by_id)
+        return decisions
 
-        # primary-source signal: results that carry a real URL
-        primary = [Source(url=r["url"], title=r.get("title", ""))
-                   for r in corpus if r.get("url")]
-        primary_sig = PrimarySourceSignal(sources=primary[:5], has_primary=bool(primary))
+    async def _precheck(self, items: list[ResearchItem]) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        for item in items:
+            is_dup = False
+            topic_seen = False
+            if self._post_history is not None:
+                try:
+                    is_dup = await self._post_history.was_posted_recently(
+                        source_url=str(item.source_url), within_hours=72)
+                except Exception as exc:
+                    logger.warning("timing.assign: duplicate_check failed for %s -- %s: %s",
+                                   item.item_id, type(exc).__name__, exc)
+                embedding = None
+                if self._embeddings is not None:
+                    embedding = (await safe_embed(self._embeddings, [item.post_angle]))[0]
+                try:
+                    topic_seen = await self._post_history.topic_posted_recently(
+                        post_angle_embedding=embedding, within_hours=48)
+                except Exception as exc:
+                    logger.warning("timing.assign: narrative_gap_check failed for %s -- %s: %s",
+                                   item.item_id, type(exc).__name__, exc)
+            out[item.item_id] = {"is_duplicate": is_dup, "topic_seen_recently": topic_seen}
+        return out
 
-        confidence = round(0.5 * velocity.confidence + 0.5 * (1.0 if corpus else 0.2), 3)
-        signal = TimingSignal(velocity=velocity, gaps=gaps, citation=citation,
-                              primary_sources=primary_sig, confidence_overall=confidence)
-        return await self._validate(TimingSignal, signal.model_dump(), job_id=job_id,
-                                    step="timing->fusion")
+    def _enforce_duplicate_override(self, decisions: list[TimingDecision],
+                                    precheck: dict[str, dict]) -> list[TimingDecision]:
+        out = []
+        for d in decisions:
+            if precheck.get(d.item_id, {}).get("is_duplicate") and d.recommended_slot != PostingSlot.reject:
+                d = d.model_copy(update={"recommended_slot": PostingSlot.reject,
+                                         "rejection_reason": "duplicate source_url posted within 72h"})
+            out.append(d)
+        return out
+
+    def _dedup_slots(self, decisions: list[TimingDecision], by_id: dict) -> list[TimingDecision]:
+        by_slot: dict[PostingSlot, list[int]] = {}
+        for idx, d in enumerate(decisions):
+            if d.recommended_slot != PostingSlot.reject:
+                by_slot.setdefault(d.recommended_slot, []).append(idx)
+        for idxs in by_slot.values():
+            if len(idxs) <= 1:
+                continue
+            ranked = sorted(idxs, key=lambda i: by_id[decisions[i].item_id].novelty_score, reverse=True)
+            for loser in ranked[1:]:
+                decisions[loser] = decisions[loser].model_copy(update={
+                    "recommended_slot": PostingSlot.reject,
+                    "rejection_reason": "slot collision -- a higher novelty_score item took this slot"})
+        return decisions

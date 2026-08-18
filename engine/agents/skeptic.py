@@ -1,62 +1,78 @@
 """
-engine/agents/skeptic.py — Skeptic agent (the 11th agent) [Tier 2].
+engine/agents/skeptic.py — Skeptic agent [Phase 2, X-agent migration].
 
-Runs after Strategy, before Copy. Adversarially reviews the chosen angle and
-answers four questions: (1) what an insider would dispute, (2) hidden/unstated
-assumptions, (3) alternative explanations, (4) is scale/impact overstated.
+Runs after Strategy, before Copy. Can now actually reject/revise (not just
+inform, as the old Skeptic did) -- consumed by the Orchestrator's bounded
+retry loop: 'reject' hard-halts immediately, 'revise' gives Strategy one
+more pass with the critique attached.
 
-Emits a 2-3 sentence `skeptic_summary` and a `confidence_adjustment`
-(-0.1..0.0 — never raises confidence). It does NOT block the job; it informs
-Copy's hedging. Sonnet tier, one LLM call, structured output enforced.
+Takes the ResearchItem alongside StrategyOutput -- the spec's own first
+hard-rejection criterion ("does the angle overclaim beyond the source")
+needs the actual source facts to check against; StrategyOutput alone is
+self-contained and has nothing to compare to.
 """
 from __future__ import annotations
 
+import json
+
 from engine.agents.base import BaseAgent
-from engine.core.models import SkepticReview, StrategyPacket
+from engine.core.models import ResearchItem, SkepticOutput, StrategyOutput
 
-_SYSTEM = ("You are a skeptical robotics/industry analyst doing adversarial review. "
-           "You do not hype. You find the weak point before it becomes the headline. "
-           "Be specific and fair. Return ONLY a JSON object, no fences.")
+_SYSTEM = (
+    "You are the Skeptic Agent for an X posting pipeline. You adversarially review "
+    "Strategy's output before Copy writes anything.\n\n"
+    "You are looking for reasons to reject or revise -- not reasons to approve.\n\n"
+    "HARD REJECTION (any one = reject):\n"
+    "- The angle requires claiming something the source document does not actually say\n"
+    "- The post would be indistinguishable from any generic AI news account\n"
+    "- The story is already covered by TechCrunch, Wired, The Verge, or Ars Technica in "
+    "the last 6 hours\n"
+    "- must_include contains no specific number, name, date, or verifiable identifier\n"
+    "- The topic is a consumer AI product (ChatGPT, Gemini, Claude, app launches)\n"
+    "- The angle is purely opinion with no factual anchor from the source\n\n"
+    "REVISION (send back with notes, don't reject):\n"
+    "- Format undersells the story (pov_post when this warrants a thread)\n"
+    "- The angle buries the most surprising fact -- that fact should be the hook\n"
+    "- must_include is missing the most specific verifiable detail from the source\n"
+    "- Hashtags are too generic for the specific story\n\n"
+    "BANNED WORDS -- flag for revision if any appear in the angle or must_include:\n"
+    "revolutionary, groundbreaking, game-changing, transformative, unprecedented, "
+    "exciting, powerful, amazing, disruptive (as a positive descriptor)\n\n"
+    "Return ONLY a JSON object, no prose, no fences:\n"
+    '{"verdict":"approved|revise|reject","critique":"<one paragraph -- what is wrong, '
+    'or why it passed>","revised_angle":"<if verdict=revise, a corrected angle, else '
+    'null>","revised_must_include":["<if verdict=revise, an updated list, else null>"]}'
+)
 
-_USER = """Adversarially review this chosen angle. Answer all four:
-1) What would a robotics engineer or industry insider DISPUTE about this claim?
-2) What assumptions are hidden or unstated?
-3) What alternative explanations exist for the same facts?
-4) Is the scale or impact being overstated?
+_USER = """Source item:
+headline: {headline}
+raw_detail: {raw_detail}
+source: {source}
+source_url: {source_url}
 
-Angle: {angle}
-Rationale: {rationale}
+Strategy's output to review:
+chosen_angle: {chosen_angle}
+format: {format}
+must_include: {must_include}
+must_avoid: {must_avoid}
+hashtags: {hashtags}
 
-Return ONLY:
-{{"disputes":"...","hidden_assumptions":"...","alternative_explanations":"...",
-"overstatement":"...","skeptic_summary":"<2-3 sentences, the key caution>",
-"confidence_adjustment":<number between -0.1 and 0.0; 0.0 if the angle is solid>}}"""
+Before verdict: check chosen_angle and every item in must_include against raw_detail
+above, line by line. Anything not directly supported by raw_detail is an overclaim --
+hard reject on that basis alone.
 
-_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "disputes": {"type": "string"}, "hidden_assumptions": {"type": "string"},
-        "alternative_explanations": {"type": "string"}, "overstatement": {"type": "string"},
-        "skeptic_summary": {"type": "string"}, "confidence_adjustment": {"type": "number"},
-    },
-    "required": ["disputes", "hidden_assumptions", "alternative_explanations",
-                 "overstatement", "skeptic_summary", "confidence_adjustment"],
-    "additionalProperties": False,
-}
+Return the JSON object as specified."""
 
 
 class SkepticAgent(BaseAgent):
-    name = "skeptic"   # not in REASONING_AGENTS -> Sonnet tier
+    name = "skeptic"
 
-    async def review(self, *, packet: StrategyPacket, job_id: str) -> SkepticReview:
-        raw = await self._complete_json(
-            system=_SYSTEM,
-            user=_USER.format(angle=packet.chosen_angle, rationale=packet.rationale),
-            job_id=job_id, max_tokens=600, output_schema=_SCHEMA)
-        if isinstance(raw, dict) and "confidence_adjustment" in raw:
-            # clamp to the allowed band — the skeptic never raises confidence
-            try:
-                raw["confidence_adjustment"] = max(-0.1, min(0.0, float(raw["confidence_adjustment"])))
-            except (TypeError, ValueError):
-                raw["confidence_adjustment"] = 0.0
-        return await self._validate(SkepticReview, raw, job_id=job_id, step="skeptic->copy")
+    async def review_v2(self, *, item: ResearchItem, strategy: StrategyOutput,
+                        job_id: str) -> SkepticOutput:
+        user = _USER.format(
+            headline=item.headline, raw_detail=item.raw_detail, source=item.source.value,
+            source_url=str(item.source_url), chosen_angle=strategy.chosen_angle,
+            format=strategy.format.value, must_include=json.dumps(strategy.must_include),
+            must_avoid=json.dumps(strategy.must_avoid), hashtags=json.dumps(strategy.hashtags))
+        raw = await self._complete_json(system=_SYSTEM, user=user, job_id=job_id, max_tokens=1000)
+        return await self._validate(SkepticOutput, raw, job_id=job_id, step="skeptic.review_v2")

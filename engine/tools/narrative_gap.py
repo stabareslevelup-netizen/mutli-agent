@@ -1,6 +1,13 @@
 """
 engine/tools/narrative_gap.py — find under-covered angles (white space).
 
+# ORPHANED - Phase 2 migration. Candidate for cleanup. Do not delete until
+# after Phase 5 is complete. No live caller: the old Timing agent used this
+# for RULE 2 gap-finding against brand pillars, a concept the new
+# TimingDecision schema doesn't have. Strategy's narrative-conflict check
+# (which sounds similar) uses a separate checker/NarrativeConstraint
+# mechanism instead — verified this module has no remaining callers.
+
 RULE 2 (Phase 0): distinguish ENTITY-SPECIFIC white space from TOPIC-GENERIC
 saturation. A candidate angle can be saturated at the topic level yet wide open
 for a named entity. The corpus is gathered by the Timing agent via web_search;

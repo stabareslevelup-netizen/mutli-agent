@@ -1,6 +1,15 @@
 """
 engine/core/fusion.py — explicit, inspectable weighted fusion of Tier 1.
 
+# ORPHANED - Phase 2 migration. Candidate for cleanup. Do not delete until
+# after Phase 5 is complete. Unreachable from the new pipeline
+# (run_sweep()/_process_item() never call fuse() -- Strategy now operates
+# on a single ResearchItem, not a multi-angle blend). Also currently
+# BROKEN, not just unused: it imports ResearchOutput, removed from
+# models.py in the Phase 2 schema migration (replaced by ResearchItem).
+# Left as-is rather than "fixed" since fixing dead code with no caller
+# would be pointless churn.
+
 Not emergent: Research / Memory / Timing are combined by a deterministic
 function using the brand's fusion_weights. Each candidate angle (from Research)
 gets a score and a per-signal contribution breakdown so the decision is fully

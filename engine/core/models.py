@@ -18,9 +18,9 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 SCHEMA_VERSION = "1.0"
 
@@ -49,18 +49,40 @@ class HandoffMeta(BaseModel):
 
 
 # ===========================================================================
-# Tier 1 — Research
+# Tier 1 — Research (Phase 2, X-agent migration: sweep across primary-source
+# government/patent/paper feeds, not a single-topic lookup — see
+# engine/tools/sam_gov.py etc. and Research.sweep())
 # ===========================================================================
-class ResearchAngle(BaseModel):
-    angle: str
-    rationale: str = ""
-    sources: list[Source] = Field(default_factory=list)
-    confidence: float = Field(..., ge=0.0, le=1.0)
+class SourceKind(str, Enum):
+    sam_gov = "SAM.gov"
+    darpa = "DARPA"
+    patent = "Patent"
+    arxiv = "arXiv"
+    congress = "Congress"
+    fed_register = "FedRegister"
+    job_signal = "JobSignal"
 
 
-class ResearchOutput(BaseModel):
-    angles: list[ResearchAngle] = Field(..., min_length=1, max_length=3)
-    generated_at: datetime = Field(default_factory=_utcnow)
+class ResearchItem(BaseModel):
+    item_id: str                          # Research-generated; Timing references
+                                           # it as a pass-through (not in the
+                                           # original spec text — needed so
+                                           # TimingDecision has something to key on)
+    source: SourceKind
+    date_found: date
+    headline: str
+    raw_detail: str
+    novelty_score: int = Field(..., ge=1, le=10)
+    post_angle: str
+    source_url: HttpUrl
+
+    @model_validator(mode="after")
+    def _novelty_floor(self) -> "ResearchItem":
+        # spec: "Only output items with novelty_score 6 or higher" — enforced
+        # structurally so a borderline LLM call can't sneak a 5 through.
+        if self.novelty_score < 6:
+            raise ValueError("novelty_score below 6 — spec requires discarding, not outputting")
+        return self
 
 
 # ===========================================================================
@@ -182,12 +204,48 @@ class PrimarySourceSignal(BaseModel):
 
 
 class TimingSignal(BaseModel):
-    """The Timing agent's Tier-1 handoff into fusion."""
+    """Superseded by TimingDecision (Phase 2) as Timing's public return type.
+    Timing uses PostHistoryStore for duplicate_check and narrative_gap_check.
+    Velocity, urgency, and citation_hedge_required fold into the batch LLM
+    call in timing.py. velocity_probe.py, citation_monitor.py, AND
+    narrative_gap.py are all orphaned by this migration (verified: Strategy's
+    conflict check uses the separate checker/NarrativeConstraint mechanism,
+    not find_gaps() — narrative_gap.py has no live caller left). Kept here
+    (unused) rather than deleted, per the orphan-don't-delete-until-Phase-5
+    convention applied to all three tool modules."""
     velocity: VelocitySignal
     gaps: NarrativeGapSignal
     citation: CitationSignal
     primary_sources: PrimarySourceSignal = Field(default_factory=PrimarySourceSignal)
     confidence_overall: float = Field(0.5, ge=0.0, le=1.0)
+
+
+class PostingSlot(str, Enum):
+    slot_7am = "7AM"
+    slot_9am = "9AM"
+    slot_12pm = "12PM"
+    slot_3pm = "3PM"
+    slot_6pm = "6PM"
+    reject = "reject"
+
+
+class TimingDecision(BaseModel):
+    """Timing's Phase 2 return type: one per ResearchItem, assigning a
+    posting slot (or rejecting) across the whole day's batch at once —
+    "at most ONE item per slot per day" is a cross-item constraint Timing
+    enforces over the full list, not per-item in isolation."""
+    item_id: str
+    recommended_slot: PostingSlot
+    rejection_reason: Optional[str] = None
+    urgency_note: str
+    citation_hedge_required: bool          # PRESERVED — maps to the existing
+                                            # CitationSignal/requires_hedging logic
+
+    @model_validator(mode="after")
+    def _reject_needs_reason(self) -> "TimingDecision":
+        if self.recommended_slot == PostingSlot.reject and not self.rejection_reason:
+            raise ValueError("recommended_slot='reject' requires rejection_reason")
+        return self
 
 
 # ===========================================================================
@@ -214,67 +272,195 @@ class MemoryQueryResult(BaseModel):
 
 
 # ===========================================================================
-# Tier 2 — Strategy (fusion output)
+# Tier 2 — Strategy (Phase 2: operates on a single ResearchItem, not a
+# fused multi-angle blend — engine/core/fusion.py is no longer called by
+# the new Orchestrator flow, left in place but orphaned pending cleanup)
 # ===========================================================================
-class StrategyPacket(BaseModel):
+class PostFormat(str, Enum):
+    short_hook = "short_hook"
+    pov_post = "pov_post"
+    thread = "thread"
+    data_drop = "data_drop"
+
+
+APPROVED_HASHTAGS = {"#AI", "#PhysicalAI", "#Robotics", "#DefenseTech",
+                     "#AutonomousSystems", "#AIAgents", "#FutureOfWar", "#DARPA"}
+
+
+def _validate_hashtags(v: list[str]) -> list[str]:
+    bad = [h for h in v if h not in APPROVED_HASHTAGS]
+    if bad:
+        raise ValueError(f"hashtags not on the approved list: {bad}")
+    return v
+
+
+class StrategyOutput(BaseModel):
     chosen_angle: str
-    rationale: str = ""
-    pillar_id: str = ""                  # matched pillar (feedback-loop correlation)
-    citation_status: str = ""            # timing citation presence (for the verification gate)
-    velocity_confidence: float = 0.0
-    requires_hedging: bool = False       # Fix 1: hedge all claims when set
-    skeptic_summary: str = ""            # Fix 2: filled by the Skeptic Agent
-    confidence_adjustment: float = 0.0   # -0.1..0.0 from the Skeptic
-    formats: list[str] = Field(default_factory=list)
-    fusion_weights: dict[str, float] = Field(default_factory=dict)
-    hard_constraints: list[NarrativeConstraint] = Field(default_factory=list)
-    inputs_digest: dict[str, float] = Field(default_factory=dict)   # per-signal contribution
+    format: PostFormat
+    must_include: list[str] = Field(..., min_length=1, max_length=3)
+    must_avoid: list[str] = Field(default_factory=list)
+    hashtags: list[str] = Field(default_factory=list, max_length=2)
+    thread_spine: Optional[list[str]] = None
+    narrative_conflict_flag: bool = False             # PRESERVED — maps to the
+    narrative_conflict_note: Optional[str] = None      # existing StrategyBlocked /
+                                                        # memory-conflict check
 
-    @field_validator("fusion_weights")
+    @field_validator("hashtags")
     @classmethod
-    def _weights_sane(cls, v: dict[str, float]) -> dict[str, float]:
-        if v and abs(sum(v.values()) - 1.0) > 0.01:
-            raise ValueError("fusion_weights must sum to 1.0")
-        return v
+    def _hashtags_allowed(cls, v: list[str]) -> list[str]:
+        return _validate_hashtags(v)
+
+    @model_validator(mode="after")
+    def _conflict_needs_note(self) -> "StrategyOutput":
+        if self.narrative_conflict_flag and not self.narrative_conflict_note:
+            raise ValueError("narrative_conflict_flag=True requires narrative_conflict_note")
+        return self
+
+    @model_validator(mode="after")
+    def _thread_spine_shape(self) -> "StrategyOutput":
+        if self.format == PostFormat.thread and not self.thread_spine:
+            raise ValueError("format='thread' requires a thread_spine")
+        if self.thread_spine is not None and not (4 <= len(self.thread_spine) <= 7):
+            raise ValueError("thread_spine must have 4-7 entries")
+        return self
 
 
-class SkepticReview(BaseModel):
-    """Adversarial review of the chosen angle (Tier 2; informs, never blocks)."""
-    disputes: str = ""                   # what an insider would dispute
-    hidden_assumptions: str = ""         # unstated assumptions
-    alternative_explanations: str = ""   # other readings of the same facts
-    overstatement: str = ""              # is scale/impact overstated
-    skeptic_summary: str                 # 2-3 sentences
-    confidence_adjustment: float = Field(0.0, ge=-0.1, le=0.0)  # never increases confidence
-
-
-# ===========================================================================
-# Tier 3 — Copy
-# ===========================================================================
-class CopyOutput(BaseModel):
-    x_thread: list[str] = Field(default_factory=list)
-    ig_caption: str = ""
-    youtube_script: str = ""
-
-
-# ===========================================================================
-# Tier 4 — Quality
-# ===========================================================================
-class QualityRoute(str, Enum):
-    publish_queue = "publish_queue"
+class SkepticVerdict(str, Enum):
+    approved = "approved"
     revise = "revise"
     reject = "reject"
 
 
-class QualityScore(BaseModel):
-    voice: float = Field(..., ge=0.0, le=1.0)
-    narrative: float = Field(..., ge=0.0, le=1.0)
-    format: float = Field(..., ge=0.0, le=1.0)
-    hook: float = Field(..., ge=0.0, le=1.0)
-    coherence: float = Field(..., ge=0.0, le=1.0)
-    overall: float = Field(..., ge=0.0, le=1.0)
-    route: QualityRoute
-    reasons: list[str] = Field(default_factory=list)
+class SkepticOutput(BaseModel):
+    """Phase 2: Skeptic can now reject/request revision (Orchestrator-enforced
+    retry bound), not just inform — see orchestrator.py's Skeptic loop."""
+    verdict: SkepticVerdict
+    critique: str
+    revised_angle: Optional[str] = None
+    revised_must_include: Optional[list[str]] = None
+
+    @model_validator(mode="after")
+    def _revise_needs_revision(self) -> "SkepticOutput":
+        if self.verdict == SkepticVerdict.revise and (
+                not self.revised_angle or not self.revised_must_include):
+            raise ValueError("verdict='revise' requires revised_angle and revised_must_include")
+        return self
+
+
+# ===========================================================================
+# Tier 3 — Copy (Phase 2: X-only — main_post + reply_link replace the old
+# x_thread/ig_caption/youtube_script shape entirely, per the clean-break
+# identity pivot)
+# ===========================================================================
+class CopyOutput(BaseModel):
+    main_post: str = Field(..., max_length=280)
+    reply_link: str
+    thread_tweets: Optional[list[str]] = None
+    format_used: PostFormat
+    char_count: int = 0                  # recomputed below, not LLM-trusted
+    hashtags_used: list[str] = Field(default_factory=list, max_length=2)
+    citation_hedged: bool = False        # PRESERVED — set True when Timing
+                                          # flagged citation_hedge_required
+
+    @field_validator("hashtags_used")
+    @classmethod
+    def _hashtags_allowed(cls, v: list[str]) -> list[str]:
+        return _validate_hashtags(v)
+
+    @field_validator("thread_tweets")
+    @classmethod
+    def _thread_tweets_within_280(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        # X hard-rejects/truncates any single tweet over 280 chars, thread or
+        # not — same technical fact main_post's Field(max_length=280) already
+        # enforces; a list field can't express a per-element cap via Field(),
+        # hence this validator.
+        if v is not None:
+            too_long = [i for i, t in enumerate(v) if len(t) > 280]
+            if too_long:
+                raise ValueError(f"thread_tweets element(s) over 280 chars: indices {too_long}")
+        return v
+
+    @model_validator(mode="after")
+    def _no_url_in_body(self) -> "CopyOutput":
+        # spec: "NON-NEGOTIABLE... never put a URL in main_post"
+        if "http://" in self.main_post or "https://" in self.main_post:
+            raise ValueError("main_post must never contain a URL — use reply_link")
+        return self
+
+    @model_validator(mode="after")
+    def _char_count_is_real(self) -> "CopyOutput":
+        object.__setattr__(self, "char_count", len(self.main_post))
+        return self
+
+
+# ===========================================================================
+# Tier 4 — Quality (Phase 2: 5 new dimensions, gate logic computed
+# structurally from scores rather than trusted from the LLM's self-report —
+# same reasoning as VelocitySignal's no-fake-precision rule)
+# ===========================================================================
+class QualityDimensions(BaseModel):
+    source_specificity: int = Field(..., ge=0, le=10)
+    differentiation: int = Field(..., ge=0, le=10)
+    hook_strength: int = Field(..., ge=0, le=10)
+    format_compliance: int = Field(..., ge=0, le=10)
+    thesis_alignment: int = Field(..., ge=0, le=10)
+
+
+class QualityVerdict(str, Enum):
+    pass_ = "pass"
+    revise = "revise"
+    reject = "reject"
+
+
+class QualityOutput(BaseModel):
+    scores: QualityDimensions
+    total: int = 0                                    # recomputed below
+    verdict: QualityVerdict = QualityVerdict.pass_     # recomputed below
+    notes: list[str] = Field(default_factory=list)
+    blocking_dimension: Optional[str] = None           # recomputed below
+    approval_note: str = Field(..., min_length=1)
+
+    @model_validator(mode="after")
+    def _compute_gate(self) -> "QualityOutput":
+        d = self.scores.model_dump()
+        object.__setattr__(self, "total", sum(d.values()))
+        lowest_name = min(d, key=d.get)
+        lowest_val = d[lowest_name]
+        if lowest_val < 5:
+            verdict, blocking = QualityVerdict.reject, lowest_name
+        elif lowest_val < 7:
+            verdict, blocking = QualityVerdict.revise, lowest_name
+        else:
+            verdict, blocking = QualityVerdict.pass_, None
+        object.__setattr__(self, "verdict", verdict)
+        object.__setattr__(self, "blocking_dimension", blocking)
+        return self
+
+
+# ===========================================================================
+# Tier 5 — Distribution staging record (Phase 2)
+# ===========================================================================
+class StagedPost(BaseModel):
+    main_post: str
+    reply_link: str
+    thread_tweets: Optional[list[str]] = None
+    format_used: PostFormat
+    scheduled_slot: PostingSlot
+    source_url: HttpUrl
+    novelty_score: int = Field(..., ge=1, le=10)
+    quality_scores: QualityDimensions
+    approval_note: str
+    requires_human_approval: Literal[True] = True   # structurally can't be False —
+                                                     # mirrors DistributionPlan's
+                                                     # confirm-mode invariant below
+    approved_at: Optional[datetime] = None
+    approved_by: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _approval_fields_paired(self) -> "StagedPost":
+        if (self.approved_at is None) != (self.approved_by is None):
+            raise ValueError("approved_at and approved_by must be set together")
+        return self
 
 
 # ===========================================================================
@@ -348,14 +534,16 @@ class ProposalView(BaseModel):
 
 __all__ = [
     "SCHEMA_VERSION", "Source", "HandoffMeta",
-    "ResearchAngle", "ResearchOutput",
+    "SourceKind", "ResearchItem",
     "VelocityVerdict", "VelocitySource", "VelocitySignal",
     "GapType", "NarrativeGap", "NarrativeGapSignal",
     "CitationPresence", "DisambiguationGuard", "CitationSignal",
     "PrimarySourceSignal", "TimingSignal",
+    "PostingSlot", "TimingDecision",
     "MemoryItem", "NarrativeConstraint", "MemoryQueryResult",
-    "StrategyPacket", "SkepticReview", "CopyOutput",
-    "QualityRoute", "QualityScore",
+    "PostFormat", "APPROVED_HASHTAGS", "StrategyOutput",
+    "SkepticVerdict", "SkepticOutput", "CopyOutput",
+    "QualityDimensions", "QualityVerdict", "QualityOutput", "StagedPost",
     "PostingMode", "DistributionPlan",
     "AgentAttribution", "ReviewItem", "ProposalView",
 ]

@@ -1,47 +1,37 @@
 """
-engine/agents/strategy.py — Strategy agent [PROVEN].
+engine/agents/strategy.py — Strategy agent [Phase 2, X-agent migration].
 
-Applies weighted fusion (Tier 1) and selects the chosen angle, with NARRATIVE
-MEMORY AS A HARD CONSTRAINT: it will never select an angle that contradicts an
-active staked position. If every candidate violates, it HALTS rather than
-contradict (StrategyBlocked) — wired to the dead-letter at the orchestrator.
+The narrative-conflict check is NOT trusted to LLM self-report -- same
+philosophy as CopyOutput.char_count / QualityOutput's gate math elsewhere
+in this migration, and how the OLD Strategy agent did this exact check
+(100% code-driven, zero LLM involvement). The LLM picks chosen_angle/
+format/etc freely; the existing checker/LexicalConstraintChecker then runs
+against the LLM's ACTUAL chosen_angle, and narrative_conflict_flag/note are
+overridden with the real computed result regardless of what the LLM said.
 
-The contradiction check is an injectable ConstraintChecker. Default is lexical
-and conservative: if an angle is clearly about a staked position but does not
-align with that staked stance, it's treated as a violation. An embedding/LLM
-checker can swap in without touching this logic.
+The conflict SINK WRITE happens here too, right next to the check that
+triggers it -- not in the Orchestrator. narrative_conflict_flag stays pure
+data (never an exception): Strategy still just returns a flagged
+StrategyOutput. The Orchestrator still owns halting the JOB (JobStore
+status, JobResult) since only it has job-state access -- see
+orchestrator.py's _halt_narrative_conflict(), trimmed to just that.
+
+Old Strategy made zero LLM calls (pure code over pre-fused angles from
+fusion.py). New Strategy genuinely needs LLM judgment (angle framing,
+format selection, must_include/hashtags) since there's no fusion step
+anymore -- one ResearchItem in, one StrategyOutput out.
 """
 from __future__ import annotations
 
 import re
 from typing import Optional, Protocol, runtime_checkable
 
-from engine.core.brand_loader import BrandConfig
-from engine.core.fusion import FusedAngle
+from engine.agents.base import AgentContext, BaseAgent
 from engine.core.models import (
-    CitationPresence, NarrativeConstraint, StrategyPacket, TimingSignal,
+    MemoryQueryResult, NarrativeConstraint, ResearchItem, StrategyOutput, TimingDecision,
 )
-from engine.core.validation_gate import ValidationGate
 
-
-def match_pillar(angle_text: str, pillars):
-    """Best lexical match of an angle to a brand pillar (or None). Used to tag
-    the packet's pillar_id, which drives the Fix-1 hedging note and the
-    feedback loop's performance-pattern grouping."""
-    at = _tokens(angle_text)
-    matched, best = None, 0.0
-    for p in pillars:
-        score = _jaccard(at, _tokens(f"{p.id} {p.desc}"))
-        if score > best:
-            best, matched = score, p
-    return matched
-
-
-class StrategyBlocked(Exception):
-    """Every candidate angle contradicts a staked position; nothing is chosen."""
-
-
-# Stopwords are filtered so overlap reflects content words, not "the"/"and".
+# --- checker mechanism: UNCHANGED from the old strategy.py ---------------
 _STOP = {
     "the", "a", "an", "and", "or", "but", "is", "are", "was", "were", "be",
     "been", "of", "to", "in", "on", "for", "with", "as", "at", "by", "we",
@@ -78,42 +68,84 @@ class LexicalConstraintChecker:
         return about_position and not aligns_stance
 
 
-class StrategyAgent:
+# --- Phase 2 prompt --------------------------------------------------------
+_SYSTEM = (
+    "You are the Strategy Agent for an X posting pipeline. You receive a single "
+    "ResearchItem that passed timing checks. Choose the exact angle and set "
+    "constraints Copy will use to write the post.\n\n"
+    "ACCOUNT THESIS -- never deviate:\n"
+    "This account publishes primary-source intelligence on physical AI, defense tech, "
+    "and autonomous systems -- before it becomes mainstream news.\n"
+    "Identity: \"The account that finds what's being built before it's announced.\"\n\n"
+    "ANGLE PRIORITY (pick highest applicable):\n"
+    "1. Something being built that nobody has reported yet\n"
+    "2. A contract or funding signal that predicts a future announcement\n"
+    "3. A failure or setback that contradicts the prevailing hype narrative\n"
+    "4. A policy or regulatory move that will affect the industry\n"
+    "5. A technical paper with real-world implications most people missed\n\n"
+    "FORMAT SELECTION:\n"
+    "- short_hook: Raw fact so surprising it needs no context. Target 71-100 chars.\n"
+    "- pov_post: Fact needs one sentence of interpretation. Target 150-240 chars.\n"
+    "- thread: Story has 3+ connected facts or requires explanation. 4-7 tweets.\n"
+    "- data_drop: Contract award, funding round, headcount signal. Target 200-260 chars.\n\n"
+    "If a skeptic critique is included below, address it directly in a revised angle "
+    "and must_include -- don't repeat the same mistake.\n\n"
+    "Return ONLY a JSON object, no prose, no fences:\n"
+    '{"chosen_angle":"<one sentence>","format":"short_hook|pov_post|thread|data_drop",'
+    '"must_include":["<1-3 specific facts>"],"must_avoid":["<framings to avoid>"],'
+    '"hashtags":["<0-2 from: #AI #PhysicalAI #Robotics #DefenseTech #AutonomousSystems '
+    '#AIAgents #FutureOfWar #DARPA>"],"thread_spine":["<4-7 bullets, ONLY if format is '
+    'thread, omit otherwise>"]}'
+)
+
+_USER = """Item:
+headline: {headline}
+raw_detail: {raw_detail}
+post_angle (Research's proposed framing -- you may refine it): {post_angle}
+source: {source}
+novelty_score: {novelty_score}
+recommended_slot: {slot}
+citation_hedge_required: {hedge}
+
+{critique_block}
+Return the JSON object as specified."""
+
+
+class StrategyAgent(BaseAgent):
     name = "strategy"
 
-    def __init__(self, gate: ValidationGate, checker: Optional[ConstraintChecker] = None):
-        self._gate = gate
+    def __init__(self, ctx: AgentContext, *, checker: Optional[ConstraintChecker] = None,
+                 narrative_conflict_sink=None):
+        super().__init__(ctx)
         self._checker = checker or LexicalConstraintChecker()
+        self._nc = narrative_conflict_sink   # sink write lives here, next to the check
 
-    async def decide(self, *, fused: list[FusedAngle], constraints: list[NarrativeConstraint],
-                     brand: BrandConfig, job_id: str,
-                     timing: Optional[TimingSignal] = None) -> StrategyPacket:
-        citation = timing.citation.presence.value if timing else ""
-        vel_conf = timing.velocity.confidence if timing else 0.0
-        # Fix 1: hedge when citation is ambiguous OR velocity confidence is low
-        requires_hedging = (citation == CitationPresence.ambiguous.value) or (vel_conf < 0.6)
+    async def decide_v2(self, *, item: ResearchItem, timing: TimingDecision,
+                        memory: MemoryQueryResult, job_id: str,
+                        skeptic_critique: Optional[str] = None) -> StrategyOutput:
+        critique_block = (f"Skeptic's critique of your previous attempt: {skeptic_critique}\n"
+                          f"Address this directly." if skeptic_critique
+                          else "(first attempt, no critique yet)")
+        user = _USER.format(headline=item.headline, raw_detail=item.raw_detail,
+                            post_angle=item.post_angle, source=item.source.value,
+                            novelty_score=item.novelty_score,
+                            slot=timing.recommended_slot.value,
+                            hedge=timing.citation_hedge_required,
+                            critique_block=critique_block)
+        raw = await self._complete_json(system=_SYSTEM, user=user, job_id=job_id, max_tokens=1500)
+        out = await self._validate(StrategyOutput, raw, job_id=job_id, step="strategy.decide_v2")
 
-        for fa in fused:  # fusion already sorted best-first
-            violating = [c for c in constraints if self._checker.violates(fa.angle, c)]
-            if violating:
-                continue
-            mp = match_pillar(fa.angle, brand.pillars)
-            packet = StrategyPacket(
-                chosen_angle=fa.angle,
-                rationale=(f"top fused score {fa.score} "
-                           f"(research={fa.research:.2f}, memory={fa.memory:.2f}, "
-                           f"timing={fa.timing:.2f}); "
-                           f"hedging={'on' if requires_hedging else 'off'}; no staked-position conflict"),
-                pillar_id=(mp.id if mp else ""),
-                citation_status=citation,
-                velocity_confidence=vel_conf,
-                requires_hedging=requires_hedging,
-                formats=brand.formats,
-                fusion_weights=brand.fusion_weights,
-                hard_constraints=constraints,
-                inputs_digest=fa.digest,
-            )
-            return await self._gate.validate(StrategyPacket, packet.model_dump(),
-                                             job_id=job_id, step="strategy->skeptic")
-        raise StrategyBlocked(
-            "all candidate angles contradict an active staked narrative position")
+        # code-level check on the LLM's ACTUAL chosen_angle -- not LLM self-report.
+        # Set UNCONDITIONALLY from the computed result (both directions), not just
+        # overridden on the positive case -- otherwise a self-reported
+        # narrative_conflict_flag=True with no real violation leaks through unchecked.
+        violating = [c for c in memory.narrative if self._checker.violates(out.chosen_angle, c)]
+        note = (f"contradicts staked position: {violating[0].position} ({violating[0].stance})"
+               if violating else None)
+        out = out.model_copy(update={"narrative_conflict_flag": bool(violating),
+                                     "narrative_conflict_note": note})
+        if violating and self._nc is not None:
+            await self._nc.record(
+                job_id=job_id, item_id=item.item_id, chosen_angle=out.chosen_angle,
+                conflict_note=note, source_url=str(item.source_url))
+        return out
