@@ -11,6 +11,15 @@ Recorded at STAGE time (inside Orchestrator._process_item(), right after
 distribution.stage_v2() succeeds) — not at publish time — so the same
 source_url doesn't re-enter tomorrow's sweep while today's staged item is
 still sitting unreviewed in the queue.
+
+Phase 4b addition: record_published()/was_content_posted_recently() are a
+SEPARATE check, added to this same store for convenience (same instance
+already shared via assembly.py) but keyed and timed differently on purpose:
+exact main_post TEXT match (not source_url), checked/recorded at actual
+PUBLISH time in distribution.py's confirm_publish() (not stage time). Do
+not conflate the two -- was_posted_recently() answers "have we staged this
+source before", was_content_posted_recently() answers "have we actually
+posted this exact text before".
 """
 from __future__ import annotations
 
@@ -42,6 +51,8 @@ class PostHistoryStore(Protocol):
     async def was_posted_recently(self, *, source_url: str, within_hours: int = 72) -> bool: ...
     async def topic_posted_recently(self, *, post_angle_embedding: Optional[list[float]],
                                     within_hours: int = 48) -> bool: ...
+    async def record_published(self, *, content: str, published_at: datetime) -> None: ...
+    async def was_content_posted_recently(self, *, content: str, within_hours: int = 72) -> bool: ...
 
 
 @dataclass
@@ -53,12 +64,19 @@ class _PostHistoryRecord:
     post_angle_embedding: Optional[list[float]] = None
 
 
+@dataclass
+class _PublishedContentRecord:
+    content: str
+    published_at: datetime
+
+
 class InMemoryPostHistoryStore:
     """Test/dev store. O(n) scan — fine at this scale (a Sql-backed variant
     can follow later, same deferral choice as narrative_conflict_sink.py)."""
 
     def __init__(self) -> None:
         self._records: list[_PostHistoryRecord] = []
+        self._published: list[_PublishedContentRecord] = []
 
     async def record(self, *, source_url: str, item_id: str, posted_at: datetime,
                      slot: str, post_angle_embedding: Optional[list[float]] = None) -> None:
@@ -81,3 +99,10 @@ class InMemoryPostHistoryStore:
             if _cosine(post_angle_embedding, r.post_angle_embedding) >= _TOPIC_SIMILARITY_THRESHOLD:
                 return True
         return False
+
+    async def record_published(self, *, content: str, published_at: datetime) -> None:
+        self._published.append(_PublishedContentRecord(content=content, published_at=published_at))
+
+    async def was_content_posted_recently(self, *, content: str, within_hours: int = 72) -> bool:
+        cutoff = _utcnow() - timedelta(hours=within_hours)
+        return any(r.content == content and r.published_at >= cutoff for r in self._published)

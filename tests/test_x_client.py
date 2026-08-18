@@ -16,7 +16,10 @@ import asyncio
 import os
 import urllib.parse
 
-from engine.tools.x_client import XApiClient, build_x_client_from_env
+from engine.tools.x_client import (
+    XApiClient, XAuthError, XDuplicateContentError, XPostError, XRateLimitError,
+    build_x_client_from_env,
+)
 
 PASS, FAIL = "PASS", "FAIL"
 results: list[tuple[str, str, str]] = []
@@ -101,9 +104,10 @@ def test_failed_post_raises_and_stops_the_thread():
     raised = False
     try:
         asyncio.run(_run_post_thread(fail_on_index=1))
-    except RuntimeError as exc:
+    except XPostError as exc:
         raised = True
         check("error message includes the API status", "429" in str(exc))
+        check("a 429 is classified as XRateLimitError specifically", isinstance(exc, XRateLimitError))
     check("a failed post in the middle of a thread raises (doesn't silently continue)", raised)
 
 

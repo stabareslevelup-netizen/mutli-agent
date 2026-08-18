@@ -29,6 +29,7 @@ from engine.core.job_manager import InMemoryJobStore, JobStore
 from engine.core.llm import LLMClient
 from engine.core.narrative_conflict_sink import InMemoryNarrativeConflictSink
 from engine.core.post_history_store import InMemoryPostHistoryStore
+from engine.core.rate_limit_queue import InMemoryRateLimitQueue
 from engine.core.validation_gate import ValidationGate
 from engine.memory.backend import InMemoryBackend, MemoryBackend
 from engine.memory.episodic import EpisodicMemory
@@ -77,10 +78,12 @@ def build_orchestrator(brand: BrandConfig, *, llm: Optional[Any] = None,
     # see what Orchestrator recorded.
     post_history = InMemoryPostHistoryStore()
     narrative_conflicts = InMemoryNarrativeConflictSink()
+    rate_limit_queue = InMemoryRateLimitQueue()   # Phase 4b — records, doesn't resume; see its own docstring
 
     dist = DistributionAgent(
         [XAdapter(link_mode="reply"), InstagramAdapter(), YouTubeAdapter()],
-        cg, gate, brand.brand_id, dead_letter_sink=dl)
+        cg, gate, brand.brand_id, dead_letter_sink=dl,
+        post_history_store=post_history, rate_limit_queue=rate_limit_queue)
 
     agents = OrchestratorAgents(
         research=ResearchAgent(ctx),
