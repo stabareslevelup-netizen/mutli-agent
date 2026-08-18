@@ -274,15 +274,14 @@ class Orchestrator:
             approval_note=quality_out.approval_note)
 
     # -----------------------------------------------------------------
-    # Review-dashboard adapter (Phase 2 stopgap)
+    # Review-dashboard builder (Phase 4a — real fields, not a stopgap adapter)
     #
-    # ReviewItem/AgentAttribution are NOT rebuilt in this phase — the spec's
-    # own tracker lists the review dashboard as Phase 4 ("4a. Human approval
-    # gate in Distribution"). This maps the new fields into the existing
-    # open-ended dict/list fields so the dashboard keeps working without a
-    # schema change here; several old fields have no real Phase-2 equivalent
-    # (pillar_id, auto_eligible, research_alternatives, timing velocity/gaps)
-    # and are left blank/False rather than mapped to something misleading.
+    # pillar_id stays "" (no pillar concept in the Phase 2 schema) but the
+    # FIELD is kept — engine/core/feedback_service.py reads it directly for
+    # cross-job pattern grouping. attribution.timing_velocity is populated
+    # exactly as before (recommended_slot's value) for the same reason —
+    # feedback_service.py reads it too; the dashboard just no longer
+    # displays it now that scheduled_slot is its own real field below.
     # -----------------------------------------------------------------
     def _build_review_item(self, jid, item, memory, strategy_out, skeptic_out, timing,
                            copy_out, quality_out, bundle, copy_secs) -> ReviewItem:
@@ -290,10 +289,7 @@ class Orchestrator:
         scores = quality_out.scores.model_dump()
         attribution = AgentAttribution(
             research_chosen=item.headline,
-            research_alternatives=[],           # no per-item "alternatives" in a sweep — see note above
-            timing_velocity=timing.recommended_slot.value,   # closest analog; not the old velocity verdict
-            timing_velocity_confidence=0.0,
-            timing_gaps=[],
+            timing_velocity=timing.recommended_slot.value,
             timing_citation="hedge required" if timing.citation_hedge_required else "not required",
             memory_context=mem_ctx,
             copy_output_seconds=copy_secs,
@@ -305,11 +301,16 @@ class Orchestrator:
             pillar_id="",                        # no pillar concept in the Phase 2 schema
             requires_hedging=timing.citation_hedge_required,
             chosen_angle=strategy_out.chosen_angle,
-            x_thread=copy_out.thread_tweets or [copy_out.main_post],   # stopgap: no ig/yt anymore
-            ig_caption="", youtube_script="",
+            main_post=copy_out.main_post,
+            thread_tweets=copy_out.thread_tweets or [],
+            reply_link=copy_out.reply_link,
+            format_used=copy_out.format_used.value,
+            scheduled_slot=timing.recommended_slot.value,
+            source_url=str(item.source_url),
+            novelty_score=item.novelty_score,
+            approval_note=quality_out.approval_note,
             quality_overall=round(quality_out.total / 50.0, 4),
             quality_route=quality_out.verdict.value,
-            auto_eligible=False,                 # always requires human approval now — see StagedPost
             platforms=bundle.plan.platforms,
             attribution=attribution,
         )

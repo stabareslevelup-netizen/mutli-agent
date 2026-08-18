@@ -486,36 +486,60 @@ class DistributionPlan(BaseModel):
 
 
 # ===========================================================================
-# Review UI (Phase 8) — the screenshot-able "my agents built this" record
+# Review UI (Phase 4a rebuild) — the screenshot-able "my agents built this" record
 # ===========================================================================
 class AgentAttribution(BaseModel):
-    """The agent story behind a piece — designed to be displayed/screenshotted."""
+    """The agent story behind a piece — designed to be displayed/screenshotted.
+
+    research_alternatives, timing_gaps, and timing_velocity_confidence were
+    removed here (Phase 4a): all three were always empty/zero in the Phase 2
+    pipeline (no per-item "alternatives" exist in a sweep; the narrative-gap
+    concept doesn't exist in the new Timing; there's no confidence figure
+    anymore) — dead fields backing dead UI, not just unused.
+
+    timing_velocity is KEPT despite being a legacy name for what's now really
+    "the recommended posting slot" — engine/core/feedback_service.py reads
+    `attribution.timing_velocity` directly for cross-job pattern grouping.
+    Renaming or repurposing it is a backend change beyond this dashboard
+    rebuild's scope; the rebuilt dashboard simply stops *displaying* it,
+    since ReviewItem.scheduled_slot now covers that ground properly.
+    """
     research_chosen: str = ""
-    research_alternatives: list[str] = Field(default_factory=list)
-    timing_velocity: str = ""
-    timing_velocity_confidence: float = 0.0
-    timing_gaps: list[str] = Field(default_factory=list)
+    timing_velocity: str = ""             # populated, but no longer displayed — see docstring
     timing_citation: str = ""
     memory_context: list[str] = Field(default_factory=list)
     copy_output_seconds: float = 0.0
-    quality: dict[str, float] = Field(default_factory=dict)   # 5 dims + overall
-    skeptic_summary: str = ""                                 # Skeptic Agent
+    quality: dict[str, float] = Field(default_factory=dict)   # 5 dims + total
+    skeptic_summary: str = ""
 
 
 class ReviewItem(BaseModel):
+    """auto_eligible removed (Phase 4a): always False under Phase 2 (every
+    item requires human approval, no exceptions — see StagedPost.
+    requires_human_approval: Literal[True]), so the conditional "human
+    review required" badge it backed was unconditional dead logic, not a
+    real toggle. ig_caption/youtube_script removed: the account is X-only,
+    these were always empty strings. x_thread renamed to thread_tweets
+    (matches CopyOutput's naming) and now holds ONLY real threads — a
+    single post's text lives in the new main_post field instead of being
+    wrapped in a 1-element list."""
     job_id: str
     brand_id: str
     status: str
-    pillar_id: str = ""
+    pillar_id: str = ""                  # kept — feedback_service.py depends on this field existing
     requires_hedging: bool = False
     created_at: datetime = Field(default_factory=_utcnow)
     chosen_angle: str = ""
-    x_thread: list[str] = Field(default_factory=list)
-    ig_caption: str = ""
-    youtube_script: str = ""
+    main_post: str = ""
+    thread_tweets: list[str] = Field(default_factory=list)
+    reply_link: str = ""
+    format_used: str = ""
+    scheduled_slot: str = ""
+    source_url: str = ""
+    novelty_score: int = 0
+    approval_note: str = ""
     quality_overall: float = 0.0
     quality_route: str = ""
-    auto_eligible: bool = False
     platforms: list[str] = Field(default_factory=list)
     attribution: AgentAttribution = Field(default_factory=AgentAttribution)
 

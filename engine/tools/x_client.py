@@ -39,6 +39,61 @@ POST_TWEET_PATH = "/2/tweets"
 RequestFn = Callable[[str, str, dict, Optional[dict]], Awaitable[tuple[int, dict]]]
 
 
+class XPostError(Exception):
+    """Base for any X posting failure. Carries the raw status/body so a
+    caller that doesn't care about the specific subtype can still log/
+    diagnose. Anything not classified as one of the specific subtypes below
+    raises this directly."""
+
+    def __init__(self, status: int, body: dict):
+        self.status = status
+        self.body = body
+        super().__init__(f"X API POST /2/tweets failed ({status}): {body}")
+
+
+class XRateLimitError(XPostError):
+    """HTTP 429. Distribution's confirm_publish() treats this as
+    queue-for-retry-later, never an immediate hard failure."""
+
+
+class XAuthError(XPostError):
+    """Bad/expired/revoked credentials (401, or a 403 that isn't
+    duplicate-content — see _classify_x_error). Distribution's
+    confirm_publish() treats this as halt-all-posting, never retry."""
+
+
+class XDuplicateContentError(XPostError):
+    """X rejected the post as a duplicate of something already posted.
+    Distribution's confirm_publish() treats this as skip-and-log, never
+    retry."""
+
+
+def _classify_x_error(status: int, body: dict) -> type[XPostError]:
+    """Maps an X API failure response to one of the specific XPostError
+    subtypes, or the generic XPostError fallback for anything else.
+
+    UNVERIFIED HEURISTIC -- flagging in code, not just in chat: X does not
+    give duplicate-content rejections their own HTTP status code. Both an
+    auth failure and a duplicate-content rejection commonly arrive as
+    403 Forbidden; the only way to tell them apart is to look for the word
+    "duplicate" somewhere in the response body (X's documented duplicate-
+    content error text is along the lines of "You are not allowed to
+    create a Tweet with duplicate content"). This has NOT been verified
+    against a real X API response from this environment -- there was no
+    way to test it live. Before relying on this in production, confirm the
+    actual response shape X returns for a real duplicate-content rejection
+    and adjust the substring check below if it doesn't match.
+    """
+    if status == 429:
+        return XRateLimitError
+    if status in (401, 403):
+        body_text = str(body).lower()
+        if "duplicate" in body_text:
+            return XDuplicateContentError
+        return XAuthError
+    return XPostError
+
+
 def _percent_encode(s: str) -> str:
     # RFC 5849 3.6: unreserved = A-Z a-z 0-9 - . _ ~
     return quote(str(s), safe="-._~")
@@ -105,7 +160,7 @@ class XApiClient:
                   "Content-Type": "application/json"}
         status, resp = await self._request("POST", url, headers, body)
         if status >= 300:
-            raise RuntimeError(f"X API POST /2/tweets failed ({status}): {resp}")
+            raise _classify_x_error(status, resp)(status, resp)
         return resp["data"]["id"]
 
     async def post_thread(self, posts: list[dict]) -> dict:
