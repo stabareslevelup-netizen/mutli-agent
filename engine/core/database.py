@@ -9,6 +9,19 @@ No live DB is needed to inspect the schema:
     python -m engine.core.database --print-ddl
 emits the full CREATE TABLE DDL (PostgreSQL dialect) so the schema can be
 reviewed/validated before a database exists.
+
+DEPLOYMENT NOTE — untested against a real Postgres instance: no live DB is
+reachable from this development environment, so Job/DeadLetter/Review (every
+table using postgresql.JSONB) and their Sql*Store classes have only been
+exercised against fake in-memory session doubles that mimic the SQLAlchemy
+AsyncSession surface each store calls (add/commit/get/execute) -- proving the
+stores' own serialization/query logic, not real SQLAlchemy-against-Postgres
+compilation or behavior (JSONB is confirmed NOT to compile against SQLite,
+so a local sqlite fallback can't stand in for this either). This is a
+pre-existing gap for Job/DeadLetter, not something new introduced with
+Review/SqlReviewStore. A real Postgres smoke test (init_db() + a round-trip
+through each Sql*Store against an actual database) is still owed before any
+of this is fully trusted in production.
 """
 from __future__ import annotations
 
@@ -159,9 +172,24 @@ class ProceduralProposal(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class Review(Base):
+    """Staged jobs for the review dashboard (Phase 4a/scheduler-prep). item
+    is the full ReviewItem.model_dump(mode="json"); bundle is a custom
+    serialization of the distribution StagedBundle (not Pydantic — see
+    engine/core/review_store.py's SqlReviewStore for the serialize/
+    deserialize helpers)."""
+    __tablename__ = "reviews"
+    job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    brand_id: Mapped[str] = mapped_column(String(128), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    item: Mapped[dict] = mapped_column(JSONB)
+    bundle: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 ALL_TABLES = [
     Job, EpisodicMemory, SemanticMemory, NarrativeMemory, ProceduralMemory,
-    ContentCalendar, CostLog, DeadLetter, ProceduralProposal,
+    ContentCalendar, CostLog, DeadLetter, ProceduralProposal, Review,
 ]
 
 

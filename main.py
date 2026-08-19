@@ -38,10 +38,24 @@ _UI = os.path.join(os.path.dirname(__file__), "ui", "review_dashboard.html")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.brand = load_brand()
+    job_store = dead_letter_sink = review_store = None   # InMemory defaults inside build_orchestrator()
     if os.getenv("DATABASE_URL"):
-        from engine.core.database import init_db
+        from engine.core.database import init_db, get_sessionmaker
         await init_db()
         app.state.db_ready = True
+        # Sql-backed stores so a separate process (e.g. a scheduled sweep
+        # script) and this dashboard server share state through the same
+        # database, instead of each holding its own in-memory queue that
+        # the other can never see. PostHistoryStore/NarrativeConflictSink/
+        # RateLimitQueue deliberately stay in-memory -- none of them are
+        # load-bearing for "a human can see and act on a staged item".
+        from engine.core.job_manager import SqlJobStore
+        from engine.core.dead_letter import SqlDeadLetterSink
+        from engine.core.review_store import SqlReviewStore
+        sm = get_sessionmaker()
+        job_store = SqlJobStore(sm)
+        dead_letter_sink = SqlDeadLetterSink(sm)
+        review_store = SqlReviewStore(sm)
     else:
         app.state.db_ready = False
     # one shared engine so the review queue persists across requests
@@ -49,7 +63,8 @@ async def lifespan(app: FastAPI):
     from engine.core.review_service import ReviewService
     from engine.core.feedback_service import FeedbackService
     from engine.tools.x_client import build_x_client_from_env
-    eng = build_orchestrator(app.state.brand)
+    eng = build_orchestrator(app.state.brand, job_store=job_store,
+                             dead_letter_sink=dead_letter_sink, review_store=review_store)
     app.state.engine = eng
     # x_http stays None (graceful degrade) until X_API_KEY/X_API_KEY_SECRET/
     # X_ACCESS_TOKEN/X_ACCESS_TOKEN_SECRET are all set in .env — the human

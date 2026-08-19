@@ -56,7 +56,8 @@ def build_orchestrator(brand: BrandConfig, *, llm: Optional[Any] = None,
                        memory_backend: Optional[MemoryBackend] = None,
                        job_store: Optional[JobStore] = None,
                        cost_sink: Optional[Any] = None,
-                       dead_letter_sink: Optional[Any] = None) -> AssembledEngine:
+                       dead_letter_sink: Optional[Any] = None,
+                       review_store: Optional[Any] = None) -> AssembledEngine:
     cost_sink = cost_sink or InMemoryCostSink()
     dl = dead_letter_sink or InMemoryDeadLetterSink()
     cg = CostGuard(daily_budget_usd=brand.budget.daily_usd, cost_sink=cost_sink)
@@ -70,7 +71,7 @@ def build_orchestrator(brand: BrandConfig, *, llm: Optional[Any] = None,
     sem = SemanticMemory(be, emb)
     nar = NarrativeMemory(be, emb)
     proc = ProceduralMemory(be, reference_set=[brand.voice], voice_threshold=0.2)
-    review_store = InMemoryReviewStore()
+    review_store = review_store or InMemoryReviewStore()
 
     # Phase 2: shared between TimingAgent (reads: duplicate_check /
     # narrative_gap_check) and Orchestrator (writes: records at stage time) —
