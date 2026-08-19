@@ -1,0 +1,65 @@
+name: Scheduled sweep
+
+# Runs Orchestrator.run_sweep() on a cadence -- see scripts/run_sweep_cron.py.
+# Once-daily by design: TimingAgent's _dedup_slots() only dedupes "one item
+# per slot per day" within a single sweep's own batch, so multiple sweeps in
+# the same day could stage colliding slots. Don't add a second schedule entry
+# without first checking whether that dedup logic still holds across runs.
+
+on:
+  schedule:
+    # 10:45 UTC, anchored to "shortly before 7AM ET" using EDT (UTC-4, summer
+    # clocks) so it never fires LATE against that target. GitHub Actions cron
+    # is UTC-only and does not observe DST, so the actual local time drifts
+    # across the year: 6:45AM ET during EDT (summer), 5:45AM ET during EST
+    # (winter) -- always before 7AM ET, just with a bigger margin in winter.
+    # There is no way to pin this to a literal local wall-clock time in
+    # GitHub's scheduler; revisit this comment (and the cron value) if the
+    # "before 7AM ET" target ever needs to be exact rather than "no later
+    # than."
+    - cron: "45 10 * * *"
+  # First real run should be triggered manually here, before trusting the
+  # schedule -- confirms network egress to SAM.gov/Congress.gov actually
+  # works from an Actions runner before it's unattended.
+  workflow_dispatch:
+
+concurrency:
+  group: run-sweep
+  # queue overlapping runs rather than cancel one -- a run_sweep() that's
+  # already spent LLM cost and staged/dead-lettered partial results shouldn't
+  # be killed mid-flight just because the next scheduled run started.
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    env:
+      BRAND_CONFIG_PATH: brands/madre_de_maquinas.yaml
+      # Required -- every Tier-1/2 agent call goes through this.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      # Required for this run to actually be visible on the dashboard --
+      # without it, run_sweep_cron.py falls back to InMemory stores that
+      # vanish when this job exits (see that script's own warning/log line).
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # Optional -- research sources degrade gracefully (source skipped, not
+      # an error) when their key is unset. See test_sam_gov.py/
+      # test_congress_gov.py for the exact "no key -> None" behavior.
+      SAM_GOV_API_KEY: ${{ secrets.SAM_GOV_API_KEY }}
+      CONGRESS_GOV_API_KEY: ${{ secrets.CONGRESS_GOV_API_KEY }}
+      # Optional -- embeddings fall back to NullEmbeddingProvider without it.
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+      # X credentials are deliberately NOT listed here: stage_v2() (what
+      # run_sweep() drives) only stages content locally via XAdapter.stage(),
+      # a pure local function with no network call -- publishing happens
+      # later, from a human's approve in the dashboard, not from this job.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - run: pip install -r requirements.txt
+
+      - run: python -m scripts.run_sweep_cron
