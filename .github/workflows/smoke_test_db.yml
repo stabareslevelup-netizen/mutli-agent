@@ -1,0 +1,33 @@
+name: Smoke test - SqlReviewStore (live Postgres)
+
+# Manual-only, one-shot round-trip check: writes a single throwaway
+# ReviewItem to the real DATABASE_URL, confirms list_staged()/get() see
+# exactly what was written, then marks it off the live queue. See
+# scripts/smoke_test_sql_review_store.py for what it actually checks.
+#
+# Deliberately separate from .github/workflows/run_sweep.yml -- this does
+# not touch content generation, the scheduled sweep, or any research/
+# posting behavior. workflow_dispatch here is just this smoke test; it is
+# not the "trigger workflow_dispatch" instruction that applies to the real
+# sweep.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    env:
+      BRAND_CONFIG_PATH: brands/madre_de_maquinas.yaml
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - run: pip install -r requirements.txt
+
+      - run: python -m scripts.smoke_test_sql_review_store
