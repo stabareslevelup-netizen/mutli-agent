@@ -7,17 +7,20 @@ name: Scheduled sweep
 # without first checking whether that dedup logic still holds across runs.
 
 on:
-  schedule:
-    # 10:45 UTC, anchored to "shortly before 7AM ET" using EDT (UTC-4, summer
-    # clocks) so it never fires LATE against that target. GitHub Actions cron
-    # is UTC-only and does not observe DST, so the actual local time drifts
-    # across the year: 6:45AM ET during EDT (summer), 5:45AM ET during EST
-    # (winter) -- always before 7AM ET, just with a bigger margin in winter.
-    # There is no way to pin this to a literal local wall-clock time in
-    # GitHub's scheduler; revisit this comment (and the cron value) if the
-    # "before 7AM ET" target ever needs to be exact rather than "no later
-    # than."
-    - cron: "45 10 * * *"
+  # schedule trigger disabled pending an explicit decision to go live -- see
+  # the smoke-test/first-manual-run sequencing; re-enabling is a deliberate
+  # call, not a default.
+  # schedule:
+  #   # 10:45 UTC, anchored to "shortly before 7AM ET" using EDT (UTC-4, summer
+  #   # clocks) so it never fires LATE against that target. GitHub Actions cron
+  #   # is UTC-only and does not observe DST, so the actual local time drifts
+  #   # across the year: 6:45AM ET during EDT (summer), 5:45AM ET during EST
+  #   # (winter) -- always before 7AM ET, just with a bigger margin in winter.
+  #   # There is no way to pin this to a literal local wall-clock time in
+  #   # GitHub's scheduler; revisit this comment (and the cron value) if the
+  #   # "before 7AM ET" target ever needs to be exact rather than "no later
+  #   # than."
+  #   - cron: "45 10 * * *"
   # First real run should be triggered manually here, before trusting the
   # schedule -- confirms network egress to SAM.gov/Congress.gov actually
   # works from an Actions runner before it's unattended.
