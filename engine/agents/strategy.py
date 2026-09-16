@@ -90,12 +90,17 @@ _SYSTEM = (
     "- data_drop: Contract award, funding round, headcount signal. Target 200-260 chars.\n\n"
     "If a skeptic critique is included below, address it directly in a revised angle "
     "and must_include -- don't repeat the same mistake.\n\n"
+    "PILLAR -- tag the angle with the single content pillar it actually belongs to:\n"
+    "physical_ai_readiness, defense_procurement, training_performance, plant_based_fuel, "
+    "building_with_ai. Use \"other\" ONLY when the angle genuinely fits none of the five -- "
+    "don't force a fit just to avoid \"other\".\n\n"
     "Return ONLY a JSON object, no prose, no fences:\n"
     '{"chosen_angle":"<one sentence>","format":"short_hook|pov_post|thread|data_drop",'
     '"must_include":["<1-3 specific facts>"],"must_avoid":["<framings to avoid>"],'
     '"hashtags":["<0-2 from: #AI #PhysicalAI #Robotics #DefenseTech #AutonomousSystems '
     '#AIAgents #FutureOfWar #DARPA>"],"thread_spine":["<4-7 bullets, ONLY if format is '
-    'thread, omit otherwise>"]}'
+    'thread, omit otherwise>"],"pillar":"physical_ai_readiness|defense_procurement|'
+    'training_performance|plant_based_fuel|building_with_ai|other"}'
 )
 
 _USER = """Item:

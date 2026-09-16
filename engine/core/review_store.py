@@ -32,6 +32,7 @@ class ReviewStore(Protocol):
     async def add(self, *, item: ReviewItem, bundle: Any = None) -> None: ...
     async def get(self, job_id: str) -> Optional[StoredReview]: ...
     async def list_staged(self) -> list[ReviewItem]: ...
+    async def list_all(self) -> list[ReviewItem]: ...
     async def set_status(self, job_id: str, status: str) -> None: ...
 
 
@@ -47,6 +48,14 @@ class InMemoryReviewStore:
 
     async def list_staged(self) -> list[ReviewItem]:
         return [s.item for s in self._items.values() if s.item.status == "staged_for_review"]
+
+    async def list_all(self) -> list[ReviewItem]:
+        # every item ever staged, regardless of status -- see
+        # engine/core/pillar_report.py, the one caller that needs this.
+        # NOTE: once PR #8 (SqlReviewStore) merges, it needs the same method
+        # (an unfiltered `select(db.Review)`) -- it doesn't exist on main yet
+        # so it can't be added here.
+        return [s.item for s in self._items.values()]
 
     async def set_status(self, job_id: str, status: str) -> None:
         s = self._items.get(job_id)

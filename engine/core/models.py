@@ -283,6 +283,24 @@ class PostFormat(str, Enum):
     data_drop = "data_drop"
 
 
+class ContentPillar(str, Enum):
+    """Which of the account's real content pillars a draft belongs to — the
+    per-draft tag that lets pillar performance (generated/approved/rejected)
+    be measured from data instead of asserted. Distinct from the legacy,
+    orphaned `BrandConfig.pillars` (brand_loader.py's `Pillar` model, from
+    the pre-Phase-2 topic set) — this enum reflects the current defense-tech/
+    DoD-intelligence identity. `other` is a real, expected value: it means
+    Strategy couldn't place the angle in any of the five real pillars, and
+    Skeptic flags it (see SkepticOutput.pillar_flag) rather than silently
+    letting it through uncounted."""
+    physical_ai_readiness = "physical_ai_readiness"
+    defense_procurement = "defense_procurement"
+    training_performance = "training_performance"
+    plant_based_fuel = "plant_based_fuel"
+    building_with_ai = "building_with_ai"
+    other = "other"
+
+
 APPROVED_HASHTAGS = {"#AI", "#PhysicalAI", "#Robotics", "#DefenseTech",
                      "#AutonomousSystems", "#AIAgents", "#FutureOfWar", "#DARPA"}
 
@@ -304,6 +322,9 @@ class StrategyOutput(BaseModel):
     narrative_conflict_flag: bool = False             # PRESERVED — maps to the
     narrative_conflict_note: Optional[str] = None      # existing StrategyBlocked /
                                                         # memory-conflict check
+    pillar: ContentPillar = ContentPillar.other       # defaults to `other` so an LLM
+                                                        # completion from before this
+                                                        # field existed still validates
 
     @field_validator("hashtags")
     @classmethod
@@ -338,6 +359,10 @@ class SkepticOutput(BaseModel):
     critique: str
     revised_angle: Optional[str] = None
     revised_must_include: Optional[list[str]] = None
+    pillar_flag: bool = False    # code-computed in skeptic.py from strategy.pillar ==
+                                  # ContentPillar.other — never LLM self-report, same
+                                  # philosophy as narrative_conflict_flag. Data only:
+                                  # does not change verdict/the retry loop.
 
     @model_validator(mode="after")
     def _revise_needs_revision(self) -> "SkepticOutput":
@@ -527,6 +552,9 @@ class ReviewItem(BaseModel):
     brand_id: str
     status: str
     pillar_id: str = ""                  # kept — feedback_service.py depends on this field existing
+    pillar: ContentPillar = ContentPillar.other   # the real, typed per-draft tag (see
+                                                    # ContentPillar); pillar_id above is
+                                                    # the separate legacy/always-empty field
     requires_hedging: bool = False
     created_at: datetime = Field(default_factory=_utcnow)
     chosen_angle: str = ""
@@ -565,7 +593,7 @@ __all__ = [
     "PrimarySourceSignal", "TimingSignal",
     "PostingSlot", "TimingDecision",
     "MemoryItem", "NarrativeConstraint", "MemoryQueryResult",
-    "PostFormat", "APPROVED_HASHTAGS", "StrategyOutput",
+    "PostFormat", "ContentPillar", "APPROVED_HASHTAGS", "StrategyOutput",
     "SkepticVerdict", "SkepticOutput", "CopyOutput",
     "QualityDimensions", "QualityVerdict", "QualityOutput", "StagedPost",
     "PostingMode", "DistributionPlan",
