@@ -18,8 +18,8 @@ import asyncio
 from datetime import date
 
 from engine.core.models import (
-    AgentAttribution, DistributionPlan, PostFormat, PostingMode, PostingSlot,
-    QualityDimensions, ReviewItem,
+    AgentAttribution, ContentPillar, DistributionPlan, PostFormat, PostingMode,
+    PostingSlot, QualityDimensions, ReviewItem,
 )
 from engine.core.review_store import InMemoryReviewStore, SqlReviewStore, StoredReview
 from engine.agents.distribution import StagedBundle
@@ -75,12 +75,18 @@ class _FakeAsyncSession:
         return self._table.get(pk)
 
     async def execute(self, stmt):
-        # Simplified on purpose: only supports the one query shape
-        # list_staged() actually issues (select(db.Review).where(status ==
-        # "staged_for_review")). Not a general SQL emulator -- this fake
-        # exists to verify SqlReviewStore's own logic, not to reimplement
-        # SQLAlchemy Core statement compilation.
-        rows = [r for r in self._table.values() if r.status == "staged_for_review"]
+        # Simplified on purpose: supports exactly the two query shapes
+        # SqlReviewStore issues -- list_staged()'s filtered select
+        # (status == "staged_for_review") and list_all()'s unfiltered
+        # select. stmt.whereclause is None iff no .where() was added
+        # (verified directly against real SQLAlchemy Select objects).
+        # Not a general SQL emulator -- this fake exists to verify
+        # SqlReviewStore's own logic, not to reimplement SQLAlchemy Core
+        # statement compilation.
+        if stmt.whereclause is None:
+            rows = list(self._table.values())
+        else:
+            rows = [r for r in self._table.values() if r.status == "staged_for_review"]
         return _FakeExecuteResult(rows)
 
 
@@ -198,6 +204,65 @@ async def test_set_status_on_missing_job_is_a_noop_not_an_error():
     check("set_status on a missing job_id doesn't raise", True)
 
 
+async def test_list_all_returns_every_status_unfiltered():
+    store = SqlReviewStore(FakeSessionmaker())
+    await store.add(item=_review_item(job_id="all1", status="staged_for_review"))
+    await store.add(item=_review_item(job_id="all2", status="approved"))
+    await store.add(item=_review_item(job_id="all3", status="rejected"))
+    all_items = await store.list_all()
+    check("list_all returns every item regardless of status",
+          {i.job_id for i in all_items} == {"all1", "all2", "all3"}, str([i.job_id for i in all_items]))
+    check("list_all items are real ReviewItems", all(isinstance(i, ReviewItem) for i in all_items))
+    # list_staged() must still be unaffected -- proves list_all's unfiltered
+    # select and list_staged's filtered select aren't accidentally sharing
+    # state or query logic in a way that breaks the existing method.
+    staged_only = await store.list_staged()
+    check("list_staged still only returns staged_for_review (unaffected by list_all)",
+          {i.job_id for i in staged_only} == {"all1"}, str([i.job_id for i in staged_only]))
+
+
+async def test_list_all_parity_between_inmemory_and_sql():
+    # Identical fixture dataset -- varying job_id, status, AND pillar -- built
+    # once and added to both store implementations, then compared field by
+    # field. This must catch a store that returns without erroring but with
+    # wrong/missing/mismatched data (e.g. dropping a pillar on deserialize,
+    # or a status filter that leaked into list_all by accident).
+    fixture = [
+        ("p1", "staged_for_review", ContentPillar.defense_procurement),
+        ("p2", "approved", ContentPillar.plant_based_fuel),
+        ("p3", "rejected", ContentPillar.other),
+        ("p4", "approved", ContentPillar.training_performance),
+    ]
+
+    async def _populate(store):
+        for job_id, status, pillar in fixture:
+            item = _review_item(job_id=job_id, status=status)
+            item = item.model_copy(update={"pillar": pillar})
+            await store.add(item=item)
+        return await store.list_all()
+
+    mem_items = await _populate(InMemoryReviewStore())
+    sql_items = await _populate(SqlReviewStore(FakeSessionmaker()))
+
+    mem_by_id = {i.job_id: i for i in mem_items}
+    sql_by_id = {i.job_id: i for i in sql_items}
+
+    check("both stores return the same set of job_ids",
+          set(mem_by_id.keys()) == set(sql_by_id.keys()) == {jid for jid, _, _ in fixture},
+          f"mem={sorted(mem_by_id)} sql={sorted(sql_by_id)}")
+
+    for job_id, expected_status, expected_pillar in fixture:
+        mem_item, sql_item = mem_by_id[job_id], sql_by_id[job_id]
+        check(f"{job_id}: InMemory and Sql agree on status (both = expected {expected_status!r})",
+              mem_item.status == sql_item.status == expected_status,
+              f"mem={mem_item.status!r} sql={sql_item.status!r}")
+        check(f"{job_id}: InMemory and Sql agree on pillar (both = expected {expected_pillar!r})",
+              mem_item.pillar == sql_item.pillar == expected_pillar,
+              f"mem={mem_item.pillar!r} sql={sql_item.pillar!r}")
+        check(f"{job_id}: InMemory and Sql agree on chosen_angle (unrelated field, confirms full-item parity)",
+              mem_item.chosen_angle == sql_item.chosen_angle)
+
+
 async def test_matches_inmemory_reviewstore_interface_behavior():
     # same scenario run against both implementations -- same observable behavior
     for name, store in [("InMemory", InMemoryReviewStore()), ("Sql", SqlReviewStore(FakeSessionmaker()))]:
@@ -218,6 +283,8 @@ async def main() -> int:
     await test_list_staged_filters_by_status()
     await test_set_status_updates_both_column_and_json_blob()
     await test_set_status_on_missing_job_is_a_noop_not_an_error()
+    await test_list_all_returns_every_status_unfiltered()
+    await test_list_all_parity_between_inmemory_and_sql()
     await test_matches_inmemory_reviewstore_interface_behavior()
     for status, name, detail in results:
         line = f"  [{status}] {name}"

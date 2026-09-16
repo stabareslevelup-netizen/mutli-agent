@@ -116,6 +116,18 @@ class SqlReviewStore:
             rows = (await s.execute(stmt)).scalars().all()
             return [ReviewItem.model_validate(r.item) for r in rows]
 
+    async def list_all(self) -> list[ReviewItem]:
+        # every item ever staged, regardless of status -- see
+        # engine/core/pillar_report.py, the one caller that needs this.
+        # Unfiltered counterpart to list_staged() above -- same pattern,
+        # just no .where() clause.
+        from sqlalchemy import select
+        from engine.core import database as db
+        async with self._sm() as s:
+            stmt = select(db.Review)
+            rows = (await s.execute(stmt)).scalars().all()
+            return [ReviewItem.model_validate(r.item) for r in rows]
+
     async def set_status(self, job_id: str, status: str) -> None:
         from engine.core import database as db
         async with self._sm() as s:
