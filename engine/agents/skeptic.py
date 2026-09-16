@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 
 from engine.agents.base import BaseAgent
-from engine.core.models import ResearchItem, SkepticOutput, StrategyOutput
+from engine.core.models import ContentPillar, ResearchItem, SkepticOutput, StrategyOutput
 
 _SYSTEM = (
     "You are the Skeptic Agent for an X posting pipeline. You adversarially review "
@@ -75,4 +75,9 @@ class SkepticAgent(BaseAgent):
             format=strategy.format.value, must_include=json.dumps(strategy.must_include),
             must_avoid=json.dumps(strategy.must_avoid), hashtags=json.dumps(strategy.hashtags))
         raw = await self._complete_json(system=_SYSTEM, user=user, job_id=job_id, max_tokens=1000)
-        return await self._validate(SkepticOutput, raw, job_id=job_id, step="skeptic.review_v2")
+        out = await self._validate(SkepticOutput, raw, job_id=job_id, step="skeptic.review_v2")
+
+        # code-computed from Strategy's ACTUAL pillar, both directions -- never LLM
+        # self-report (same philosophy as strategy.py's narrative_conflict_flag).
+        # Measurement only: does not change verdict/the retry loop.
+        return out.model_copy(update={"pillar_flag": strategy.pillar == ContentPillar.other})

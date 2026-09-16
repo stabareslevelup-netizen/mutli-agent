@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -122,6 +124,17 @@ async def review_approve(job_id: str):
 @app.post("/review/job/{job_id}/reject")
 async def review_reject(job_id: str, req: RejectRequest):
     return await app.state.review.reject(job_id=job_id, reason=req.reason)
+
+
+@app.get("/review/pillar_report")
+async def review_pillar_report(days: int = 7):
+    """Weekly boredom-signal report: drafts generated/approved/rejected per
+    content pillar (engine/core/pillar_report.py). Only reflects this
+    process's own review store -- see that module's docstring."""
+    from engine.core.pillar_report import build_pillar_report
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    stats = await build_pillar_report(app.state.engine.review_store, since=since)
+    return [asdict(s) for s in stats.values()]
 
 
 @app.get("/review/proposals")

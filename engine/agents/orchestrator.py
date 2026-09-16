@@ -276,12 +276,15 @@ class Orchestrator:
     # -----------------------------------------------------------------
     # Review-dashboard builder (Phase 4a — real fields, not a stopgap adapter)
     #
-    # pillar_id stays "" (no pillar concept in the Phase 2 schema) but the
-    # FIELD is kept — engine/core/feedback_service.py reads it directly for
-    # cross-job pattern grouping. attribution.timing_velocity is populated
-    # exactly as before (recommended_slot's value) for the same reason —
-    # feedback_service.py reads it too; the dashboard just no longer
-    # displays it now that scheduled_slot is its own real field below.
+    # pillar_id stays "" (legacy field — no pillar concept when it was added)
+    # but is KEPT — engine/core/feedback_service.py reads it directly for
+    # cross-job pattern grouping. The real, typed per-draft tag now lives in
+    # the new `pillar` field below, populated from Strategy's actual output
+    # (see ContentPillar / engine/core/pillar_report.py for what reads it).
+    # attribution.timing_velocity is populated exactly as before
+    # (recommended_slot's value) for the same reason — feedback_service.py
+    # reads it too; the dashboard just no longer displays it now that
+    # scheduled_slot is its own real field below.
     # -----------------------------------------------------------------
     def _build_review_item(self, jid, item, memory, strategy_out, skeptic_out, timing,
                            copy_out, quality_out, bundle, copy_secs) -> ReviewItem:
@@ -298,7 +301,8 @@ class Orchestrator:
         )
         return ReviewItem(
             job_id=jid, brand_id=self._brand.brand_id, status="staged_for_review",
-            pillar_id="",                        # no pillar concept in the Phase 2 schema
+            pillar_id="",                        # legacy field — see comment above
+            pillar=strategy_out.pillar,
             requires_hedging=timing.citation_hedge_required,
             chosen_angle=strategy_out.chosen_angle,
             main_post=copy_out.main_post,

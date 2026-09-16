@@ -73,6 +73,10 @@
   .prop pre{white-space:pre-wrap;background:var(--charcoal-3);border:1px solid var(--line);border-radius:6px;padding:10px;margin:8px 0;color:var(--matte)}
   .sim-ok{color:var(--ok)} .sim-bad{color:var(--bad)}
   .empty{color:var(--muted);padding:20px;text-align:center}
+  .pillar-table{width:100%;border-collapse:collapse;margin-top:6px}
+  .pillar-table th,.pillar-table td{padding:8px 10px;text-align:right;border-bottom:1px solid var(--line);font-size:12px}
+  .pillar-table th:first-child,.pillar-table td:first-child{text-align:left;color:#fff}
+  .pillar-table thead th{color:var(--muted);text-transform:uppercase;font-size:10px;letter-spacing:.08em}
   .toast{position:fixed;bottom:20px;right:20px;background:var(--charcoal-3);border:1px solid var(--pink);
     border-radius:8px;padding:12px 16px;color:#fff;display:none;max-width:380px}
 </style>
@@ -98,6 +102,10 @@
         <div class="empty">Agent attribution appears here — the proof of the build.</div>
       </section>
     </div>
+    <section class="proposals">
+      <h2>PILLAR REPORT <small style="color:var(--muted)">— trailing 7 days, the boredom signal</small></h2>
+      <div id="pillarReport"></div>
+    </section>
     <section class="proposals">
       <h2>PROCEDURAL CHANGES <small style="color:var(--muted)">— guarded self-improvement</small></h2>
       <div id="proposals"></div>
@@ -214,7 +222,17 @@ async function approveProp(id){
 async function rejectProp(id){ await fetch("/review/proposals/"+id+"/reject",{method:"POST"}); toast("Proposal rejected"); loadProposals(); }
 async function rollback(agent){ const r=await (await fetch("/review/rollback/"+agent,{method:"POST"})).json(); toast("Rollback: "+r.status); loadProposals(); }
 
-loadQueue(); loadProposals();
+async function loadPillarReport(){
+  const rows = await (await fetch("/review/pillar_report?days=7")).json();
+  const el = $("#pillarReport");
+  if(!rows.length){ el.innerHTML='<div class="empty">No data yet.</div>'; return; }
+  el.innerHTML = `<table class="pillar-table">
+    <thead><tr><th>Pillar</th><th>Generated</th><th>Approved</th><th>Rejected</th></tr></thead>
+    <tbody>${rows.map(r=>`<tr><td>${esc(r.pillar)}</td><td>${r.generated}</td><td>${r.approved}</td><td>${r.rejected}</td></tr>`).join("")}</tbody>
+  </table>`;
+}
+
+loadQueue(); loadProposals(); loadPillarReport();
 setInterval(loadQueue, 8000);
 </script>
 </body>
